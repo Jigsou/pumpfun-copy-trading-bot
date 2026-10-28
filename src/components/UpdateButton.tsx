@@ -48,9 +48,26 @@ export const UpdateButton: React.FC = () => {
   const [branch, setBranch] = useState<string | null>(null);
   const [channels, setChannels] = useState<string[]>(['main', 'dev']);
   const wsRef = useRef<WebSocket | null>(null);
+  const phaseRef = useRef<Phase>('idle');
   const runningRef = useRef(false);
   const resumedRef = useRef(false);
   const pendingRef = useRef<Record<string, unknown>>({ type: 'app_update' });
+
+  const go = (p: Phase) => {
+    phaseRef.current = p;
+    setPhase(p);
+  };
+
+  useEffect(() => {
+    if (phase !== 'restarting') return undefined;
+    const t = setTimeout(() => {
+      if (phaseRef.current === 'restarting') {
+        go('error');
+        setMessage('The local server did not come back within 90 seconds. Check the terminal that runs npm start.');
+      }
+    }, 90000);
+    return () => clearTimeout(t);
+  }, [phase]);
 
   useEffect(() => {
     let closed = false;
@@ -59,6 +76,10 @@ export const UpdateButton: React.FC = () => {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
       ws.onopen = () => {
+        if (phaseRef.current === 'restarting') {
+          go('done');
+          setMessage('Server back online.');
+        }
         ws.send(JSON.stringify({ type: 'app_version' }));
         ws.send(JSON.stringify({ type: 'demo_hello' }));
       };
@@ -69,8 +90,8 @@ export const UpdateButton: React.FC = () => {
             setHead(msg.head ?? null);
             setBranch(msg.branch ?? null);
             if (Array.isArray(msg.channels) && msg.channels.length) setChannels(msg.channels);
-            if (sessionStorage.getItem(RESUME_KEY)) {
-              setPhase('done');
+            if (phaseRef.current === 'restarting' || sessionStorage.getItem(RESUME_KEY)) {
+              go('done');
               setMessage('Server back online on ' + (msg.branch ?? '?') + ' ' + (msg.head ?? '') + '.');
             }
           } else if (msg.type === 'demo_state' && msg.state) {
@@ -108,34 +129,34 @@ export const UpdateButton: React.FC = () => {
               );
               if (yes) {
                 pendingRef.current = { ...pendingRef.current, stash: true };
-                setPhase('working');
+                go('working');
                 setMessage('Working...');
                 ws.send(JSON.stringify({ ...pendingRef.current, confirmed: false }));
               } else {
-                setPhase('idle');
+                go('idle');
                 setMessage('Cancelled. Nothing was changed.');
               }
             } else if (!msg.ok) {
-              setPhase('error');
+              go('error');
               setMessage(String(msg.message));
             } else if (msg.needsConfirm) {
               const files = Array.isArray(msg.files) ? msg.files.slice(0, 8).join(', ') : '';
               const yes = window.confirm(String(msg.message) + (files ? ' Files: ' + files : '') + ' Continue?');
               if (yes) {
-                setPhase('working');
+                go('working');
                 setMessage('Working...');
                 ws.send(JSON.stringify({ ...pendingRef.current, confirmed: true }));
               } else {
-                setPhase('idle');
+                go('idle');
                 setMessage('Cancelled.');
               }
             } else if (msg.restarting) {
               resumedRef.current = false;
               sessionStorage.setItem(RESUME_KEY, JSON.stringify({ wasRunning: runningRef.current, at: Date.now() }));
-              setPhase('restarting');
+              go('restarting');
               setMessage(String(msg.message));
             } else {
-              setPhase(msg.manual ? 'error' : 'done');
+              go(msg.manual ? 'error' : 'done');
               setMessage(String(msg.message));
             }
           }
@@ -144,6 +165,10 @@ export const UpdateButton: React.FC = () => {
         }
       };
       ws.onclose = () => {
+        if (phaseRef.current === 'working') {
+          go('error');
+          setMessage('Connection to the local server was lost during the operation. Refresh the page to see the result.');
+        }
         if (!closed) timer = setTimeout(connect, 1500);
       };
       ws.onerror = () => ws.close();
@@ -162,12 +187,12 @@ export const UpdateButton: React.FC = () => {
     const ws = wsRef.current;
     if (busy) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setPhase('error');
+      go('error');
       setMessage('Local server unreachable.');
       return;
     }
     pendingRef.current = payload;
-    setPhase('working');
+    go('working');
     setMessage('Checking GitHub...');
     ws.send(JSON.stringify({ ...payload, confirmed: false }));
   };
