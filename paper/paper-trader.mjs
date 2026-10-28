@@ -57,12 +57,25 @@ async function rpc(method, params) {
   return json.result;
 }
 
+let txVersion = 0;
+
 async function getTx(signature) {
   for (let i = 0; i < 8; i++) {
-    const tx = await rpc('getTransaction', [
-      signature,
-      { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
-    ]);
+    let tx;
+    try {
+      tx = await rpc('getTransaction', [
+        signature,
+        { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: txVersion },
+      ]);
+    } catch (e) {
+      const m = String(e.message).match(/maxSupportedTransactionVersion["']?\s*:\s*(\d+)/);
+      if (m && Number(m[1]) > txVersion) {
+        txVersion = Number(m[1]);
+        say(`Version de transaction supportee ajustee a ${txVersion}`);
+        continue;
+      }
+      throw e;
+    }
     if (tx) return tx;
     await sleep(400);
   }
