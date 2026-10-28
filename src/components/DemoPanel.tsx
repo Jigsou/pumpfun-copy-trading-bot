@@ -75,10 +75,29 @@ interface DemoState {
   lastError: { message: string; time: number } | null;
 }
 
-const DEFAULT_WALLETS: WalletEntry[] = [
-  { address: '6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP', label: 'Cupsey ? (a verifier sur Solscan)' },
-];
+const OLD_DEFAULT_LABEL = 'Cupsey ? (a verifier sur Solscan)';
+const DEFAULT_LABEL = 'Cupsey ? (verify on Solscan)';
+const DEFAULT_WALLETS: WalletEntry[] = [{ address: '6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP', label: DEFAULT_LABEL }];
 const DEFAULT_FORM = { buySol: '0.1', delays: '1000,2000,3000', feePct: '1', costPerTxSol: '0.001', timeoutMin: '30' };
+
+const FR_EN: [string, string][] = [
+  ['vente de la cible', 'Target sold'],
+  ['delai depasse', 'Timeout'],
+  ['non evaluable', 'unpriced'],
+  ['Adresse Solana invalide (32 a 44 caracteres base58).', 'Invalid Solana address (32 to 44 base58 characters).'],
+  ['Adresse invalide', 'Invalid address'],
+  ['Cle Helius manquante.', 'Missing Helius key.'],
+  ['Ajoute au moins un wallet a suivre.', 'Add at least one wallet to follow.'],
+  ['Cle Helius refusee ou RPC injoignable', 'Helius key rejected or RPC unreachable'],
+  ['Commande inconnue', 'Unknown command'],
+  ['Abonnement refuse', 'Subscription refused'],
+  ['Ouverture simulee', 'Simulated open'],
+  ['Envoi WebSocket', 'WebSocket send'],
+  ['reponse invalide', 'invalid response'],
+  ['limite de requetes Helius (429) apres', 'Helius rate limit (429) after'],
+  ['essais', 'attempts'],
+];
+const translateText = (s: string) => FR_EN.reduce((acc, [fr, en]) => acc.split(fr).join(en), s);
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -92,7 +111,7 @@ function loadJson<T>(key: string, fallback: T): T {
 const short = (a: string) => `${a.slice(0, 4)}...${a.slice(-4)}`;
 const fmtPct = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`);
 const fmtSol = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(4)}`);
-const fmtTime = (t: number) => new Date(t).toLocaleTimeString('fr-CA');
+const fmtTime = (t: number) => new Date(t).toLocaleTimeString('en-GB');
 const colorOf = (v: number | null | undefined) => (v == null ? 'text-gray-400' : v >= 0 ? 'text-green-400' : 'text-red-400');
 
 const TH = 'text-left text-gray-400 font-normal px-2 py-1';
@@ -103,7 +122,9 @@ export const DemoPanel: React.FC = () => {
   const [state, setState] = useState<DemoState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('demoHeliusKey') ?? '');
-  const [wallets, setWallets] = useState<WalletEntry[]>(() => loadJson<WalletEntry[]>('demoWallets', DEFAULT_WALLETS));
+  const [wallets, setWallets] = useState<WalletEntry[]>(() =>
+    loadJson<WalletEntry[]>('demoWallets', DEFAULT_WALLETS).map((w) => (w.label === OLD_DEFAULT_LABEL ? { ...w, label: DEFAULT_LABEL } : w))
+  );
   const [form, setForm] = useState(() => loadJson('demoForm', DEFAULT_FORM));
   const [newAddr, setNewAddr] = useState('');
   const [newLabel, setNewLabel] = useState('');
@@ -133,9 +154,9 @@ export const DemoPanel: React.FC = () => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'demo_state') setState(msg.state as DemoState);
-          else if (msg.type === 'demo_error') setError(String(msg.message));
+          else if (msg.type === 'demo_error') setError(translateText(String(msg.message)));
         } catch {
-          // message ignore
+          // ignored message
         }
       };
       ws.onclose = () => {
@@ -158,7 +179,7 @@ export const DemoPanel: React.FC = () => {
       ws.send(JSON.stringify(obj));
       return true;
     }
-    setError('Serveur local injoignable. Lance le projet avec npm.cmd start.');
+    setError('Local server unreachable. Start the project with npm.cmd start.');
     return false;
   }, []);
 
@@ -178,11 +199,11 @@ export const DemoPanel: React.FC = () => {
   const handleStart = () => {
     setError(null);
     if (apiKey.trim().length < 8) {
-      setError('Colle ta cle API Helius (gratuite sur helius.dev).');
+      setError('Paste your Helius API key (free at helius.dev).');
       return;
     }
     if (wallets.length === 0) {
-      setError('Ajoute au moins un wallet a suivre.');
+      setError('Add at least one wallet to follow.');
       return;
     }
     send({ type: 'demo_start', apiKey: apiKey.trim(), settings: currentSettings(), wallets });
@@ -191,7 +212,7 @@ export const DemoPanel: React.FC = () => {
   const handleAddWallet = () => {
     const address = newAddr.trim();
     if (!BASE58.test(address)) {
-      setError('Adresse Solana invalide (32 a 44 caracteres).');
+      setError('Invalid Solana address (32 to 44 characters).');
       return;
     }
     setError(null);
@@ -217,17 +238,17 @@ export const DemoPanel: React.FC = () => {
   const totalN = stats.reduce((a, s) => a + s.n, 0);
   const slowest = stats.length ? stats[stats.length - 1] : null;
 
-  let verdict = 'Lance le simulateur et laisse-le tourner.';
+  let verdict = 'Start the simulator and let it run.';
   let verdictColor = 'text-gray-300';
   if (slowest && state) {
     const perDelay = Math.max(...stats.map((s) => s.n));
     if (perDelay < 50) {
-      verdict = `Pas assez de donnees : ${perDelay}/50 trades fermes pour le delai le plus fourni. Ne conclus rien encore.`;
+      verdict = `Not enough data: ${perDelay}/50 closed trades for the delay with the most data. Do not conclude anything yet.`;
     } else if (slowest.totalPnlSol <= 0) {
-      verdict = `Au delai de ${slowest.delayMs} ms, le PnL simule est negatif (${fmtSol(slowest.totalPnlSol)} SOL). Copier ce wallet perdrait de l'argent avec ce delai.`;
+      verdict = `At a ${slowest.delayMs} ms delay, the simulated PnL is negative (${fmtSol(slowest.totalPnlSol)} SOL). Copying this wallet would lose money at this delay.`;
       verdictColor = 'text-red-400';
     } else {
-      verdict = `PnL positif meme a ${slowest.delayMs} ms (${fmtSol(slowest.totalPnlSol)} SOL). Prometteur, mais continue plusieurs jours avant de risquer de l'argent reel.`;
+      verdict = `PnL is positive even at ${slowest.delayMs} ms (${fmtSol(slowest.totalPnlSol)} SOL). Promising, but keep running for several days before risking real money.`;
       verdictColor = 'text-green-400';
     }
   }
@@ -235,23 +256,23 @@ export const DemoPanel: React.FC = () => {
   return (
     <div className='space-y-6'>
       <div className='rounded-md border border-yellow-600 bg-yellow-900/20 p-3 text-sm text-yellow-200'>
-        MODE DEMO : aucune cle privee, aucune transaction envoyee. Le simulateur lit la blockchain (Helius gratuit) et calcule ce que
-        tu aurais paye, avec les frais, le slippage et un delai de ton choix.
+        DEMO MODE: no private key, no transaction sent. The simulator reads the blockchain (free Helius) and computes what you would have
+        paid, including fees, slippage and a delay of your choice.
       </div>
 
       <Card className='bg-gray-800 border-gray-700'>
         <CardHeader>
           <div className='flex flex-wrap items-center justify-between gap-2'>
-            <CardTitle className='text-white'>Simulateur</CardTitle>
+            <CardTitle className='text-white'>Simulator</CardTitle>
             <div className='flex flex-wrap gap-2'>
               <Badge variant='outline' className={serverUp ? 'text-green-400 border-green-400' : 'text-red-400 border-red-400'}>
-                {serverUp ? 'Serveur local OK' : 'Serveur local injoignable'}
+                {serverUp ? 'Local server OK' : 'Local server unreachable'}
               </Badge>
               <Badge variant='outline' className={running ? 'text-green-400 border-green-400' : 'text-gray-400 border-gray-500'}>
-                {running ? 'Simulation en cours' : 'Arretee'}
+                {running ? 'Simulation running' : 'Stopped'}
               </Badge>
               <Badge variant='outline' className={state?.connected ? 'text-green-400 border-green-400' : 'text-gray-400 border-gray-500'}>
-                {state?.connected ? 'Helius connecte' : 'Helius deconnecte'}
+                {state?.connected ? 'Helius connected' : 'Helius disconnected'}
               </Badge>
             </div>
           </div>
@@ -259,43 +280,43 @@ export const DemoPanel: React.FC = () => {
         <CardContent className='space-y-4'>
           <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
             <div className='space-y-2 md:col-span-3'>
-              <Label htmlFor='heliusKey' className='text-gray-300'>Cle API Helius (gratuite, sauvegardee dans ce navigateur)</Label>
+              <Label htmlFor='heliusKey' className='text-gray-300'>Helius API key (free, saved in this browser)</Label>
               <Input
                 id='heliusKey'
                 type='password'
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 className='bg-gray-900 border-gray-600 text-white'
-                placeholder='Colle ta cle Helius ici'
+                placeholder='Paste your Helius key here'
               />
             </div>
             <div className='space-y-2'>
-              <Label htmlFor='buySol' className='text-gray-300'>Montant par trade (SOL)</Label>
+              <Label htmlFor='buySol' className='text-gray-300'>Amount per trade (SOL)</Label>
               <Input id='buySol' value={form.buySol} onChange={(e) => setForm({ ...form, buySol: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
             </div>
             <div className='space-y-2'>
-              <Label htmlFor='delays' className='text-gray-300'>Delais testes en meme temps (ms)</Label>
+              <Label htmlFor='delays' className='text-gray-300'>Delays tested at the same time (ms)</Label>
               <Input id='delays' value={form.delays} onChange={(e) => setForm({ ...form, delays: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
             </div>
             <div className='space-y-2'>
-              <Label htmlFor='timeoutMin' className='text-gray-300'>Sortie max (minutes)</Label>
+              <Label htmlFor='timeoutMin' className='text-gray-300'>Max hold time (minutes)</Label>
               <Input id='timeoutMin' value={form.timeoutMin} onChange={(e) => setForm({ ...form, timeoutMin: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
             </div>
             <div className='space-y-2'>
-              <Label htmlFor='feePct' className='text-gray-300'>Frais Pump.fun (%)</Label>
+              <Label htmlFor='feePct' className='text-gray-300'>Pump.fun fee (%)</Label>
               <Input id='feePct' value={form.feePct} onChange={(e) => setForm({ ...form, feePct: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
             </div>
             <div className='space-y-2'>
-              <Label htmlFor='cost' className='text-gray-300'>Cout par transaction (SOL)</Label>
+              <Label htmlFor='cost' className='text-gray-300'>Cost per transaction (SOL)</Label>
               <Input id='cost' value={form.costPerTxSol} onChange={(e) => setForm({ ...form, costPerTxSol: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
             </div>
           </div>
 
           <div className='flex flex-wrap gap-2'>
             {!running ? (
-              <Button onClick={handleStart} className='bg-green-600 hover:bg-green-700'>Demarrer la simulation</Button>
+              <Button onClick={handleStart} className='bg-green-600 hover:bg-green-700'>Start simulation</Button>
             ) : (
-              <Button onClick={() => send({ type: 'demo_stop' })} className='bg-red-600 hover:bg-red-700'>Arreter</Button>
+              <Button onClick={() => send({ type: 'demo_stop' })} className='bg-red-600 hover:bg-red-700'>Stop</Button>
             )}
             <Button
               variant='outline'
@@ -303,17 +324,17 @@ export const DemoPanel: React.FC = () => {
               disabled={!running}
               onClick={() => send({ type: 'demo_update_settings', settings: currentSettings() })}
             >
-              Appliquer les reglages (prochains trades)
+              Apply settings (next trades)
             </Button>
             <Button variant='outline' className='border-gray-600 text-gray-300 hover:bg-gray-700' onClick={() => send({ type: 'demo_reset' })}>
-              Remettre les stats a zero
+              Reset stats
             </Button>
           </div>
 
           {error && <div className='rounded-md border border-red-600 bg-red-900/20 p-2 text-sm text-red-300'>{error}</div>}
           {state?.lastError && (
             <div className='rounded-md border border-orange-600 bg-orange-900/20 p-2 text-xs text-orange-300'>
-              Derniere erreur ({fmtTime(state.lastError.time)}) : {state.lastError.message}
+              Last error ({fmtTime(state.lastError.time)}): {translateText(state.lastError.message)}
             </div>
           )}
         </CardContent>
@@ -321,27 +342,27 @@ export const DemoPanel: React.FC = () => {
 
       <Card className='bg-gray-800 border-gray-700'>
         <CardHeader>
-          <CardTitle className='text-white'>Wallets suivis</CardTitle>
+          <CardTitle className='text-white'>Followed wallets</CardTitle>
         </CardHeader>
         <CardContent className='space-y-4'>
           <div className='grid grid-cols-1 md:grid-cols-[2fr_1fr_auto] gap-2'>
-            <Input value={newAddr} onChange={(e) => setNewAddr(e.target.value)} placeholder='Adresse du wallet a suivre' className='bg-gray-900 border-gray-600 text-white' />
-            <Input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder='Nom (optionnel)' className='bg-gray-900 border-gray-600 text-white' />
-            <Button onClick={handleAddWallet} className='bg-blue-600 hover:bg-blue-700'>Ajouter</Button>
+            <Input value={newAddr} onChange={(e) => setNewAddr(e.target.value)} placeholder='Address of the wallet to follow' className='bg-gray-900 border-gray-600 text-white' />
+            <Input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder='Name (optional)' className='bg-gray-900 border-gray-600 text-white' />
+            <Button onClick={handleAddWallet} className='bg-blue-600 hover:bg-blue-700'>Add</Button>
           </div>
           <p className='text-xs text-gray-400'>
-            Quand la simulation tourne, ajouter, retirer ou isoler un wallet s'applique tout de suite, sans redemarrer.
-            Verifie toujours l'adresse sur Solscan : des imitateurs existent.
+            While the simulation is running, adding, removing or isolating a wallet applies immediately, without restarting.
+            Always verify the address on Solscan: impersonators exist.
           </p>
           <div className='overflow-x-auto'>
             <table className='w-full text-sm'>
               <thead>
                 <tr>
-                  <th className={TH}>Nom</th>
-                  <th className={TH}>Adresse</th>
-                  <th className={TH}>Achats</th>
-                  <th className={TH}>Ventes</th>
-                  <th className={TH}>Dernier trade</th>
+                  <th className={TH}>Name</th>
+                  <th className={TH}>Address</th>
+                  <th className={TH}>Buys</th>
+                  <th className={TH}>Sells</th>
+                  <th className={TH}>Last trade</th>
                   <th className={TH}>Actions</th>
                 </tr>
               </thead>
@@ -361,10 +382,10 @@ export const DemoPanel: React.FC = () => {
                       <td className={TD}>{ws?.lastSeen ? fmtTime(ws.lastSeen) : '-'}</td>
                       <td className={`${TD} space-x-2`}>
                         <Button size='sm' variant='outline' className='border-gray-600 text-gray-300 hover:bg-gray-700' onClick={() => handleOnlyThis(w)}>
-                          Suivre seulement celui-ci
+                          Follow only this one
                         </Button>
                         <Button size='sm' variant='outline' className='border-gray-600 text-red-300 hover:bg-gray-700' onClick={() => handleRemoveWallet(w.address)}>
-                          Retirer
+                          Remove
                         </Button>
                       </td>
                     </tr>
@@ -372,7 +393,7 @@ export const DemoPanel: React.FC = () => {
                 })}
                 {wallets.length === 0 && (
                   <tr>
-                    <td className={TD} colSpan={6}>Aucun wallet. Ajoute une adresse ci-dessus.</td>
+                    <td className={TD} colSpan={6}>No wallets. Add an address above.</td>
                   </tr>
                 )}
               </tbody>
@@ -383,7 +404,7 @@ export const DemoPanel: React.FC = () => {
 
       <Card className='bg-gray-800 border-gray-700'>
         <CardHeader>
-          <CardTitle className='text-white'>Resultats selon ton delai d'execution</CardTitle>
+          <CardTitle className='text-white'>Results by execution delay</CardTitle>
         </CardHeader>
         <CardContent className='space-y-3'>
           <p className={`text-sm ${verdictColor}`}>{verdict}</p>
@@ -391,13 +412,13 @@ export const DemoPanel: React.FC = () => {
             <table className='w-full text-sm'>
               <thead>
                 <tr>
-                  <th className={TH}>Delai</th>
-                  <th className={TH}>Trades fermes</th>
-                  <th className={TH}>Taux de gain</th>
-                  <th className={TH}>PnL total (SOL)</th>
-                  <th className={TH}>PnL moyen</th>
-                  <th className={TH}>Prix paye vs cible (median)</th>
-                  <th className={TH}>Non evaluables</th>
+                  <th className={TH}>Delay</th>
+                  <th className={TH}>Closed trades</th>
+                  <th className={TH}>Win rate</th>
+                  <th className={TH}>Total PnL (SOL)</th>
+                  <th className={TH}>Average PnL</th>
+                  <th className={TH}>Price paid vs target (median)</th>
+                  <th className={TH}>Unpriced</th>
                 </tr>
               </thead>
               <tbody>
@@ -414,15 +435,15 @@ export const DemoPanel: React.FC = () => {
                 ))}
                 {stats.length === 0 && (
                   <tr>
-                    <td className={TD} colSpan={7}>Aucune donnee pour le moment.</td>
+                    <td className={TD} colSpan={7}>No data yet.</td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
           <p className='text-xs text-gray-400'>
-            Total : {totalN} trades simules. Ignores (PumpSwap ou courbe terminee) : {state?.skipped ?? 0}. Il faut au moins 50 trades par delai
-            avant de tirer une conclusion.
+            Total: {totalN} simulated trades. Skipped (PumpSwap, finished curve or stale): {state?.skipped ?? 0}. You need at least 50 trades per
+            delay before drawing any conclusion.
           </p>
         </CardContent>
       </Card>
@@ -430,7 +451,7 @@ export const DemoPanel: React.FC = () => {
       <div className='grid grid-cols-1 xl:grid-cols-2 gap-6'>
         <Card className='bg-gray-800 border-gray-700'>
           <CardHeader>
-            <CardTitle className='text-white'>Positions simulees ouvertes ({state?.positions.length ?? 0})</CardTitle>
+            <CardTitle className='text-white'>Open simulated positions ({state?.positions.length ?? 0})</CardTitle>
           </CardHeader>
           <CardContent className='overflow-x-auto'>
             <table className='w-full text-sm'>
@@ -438,9 +459,9 @@ export const DemoPanel: React.FC = () => {
                 <tr>
                   <th className={TH}>Wallet</th>
                   <th className={TH}>Token</th>
-                  <th className={TH}>Delai</th>
-                  <th className={TH}>Vs cible</th>
-                  <th className={TH}>Heure</th>
+                  <th className={TH}>Delay</th>
+                  <th className={TH}>Vs target</th>
+                  <th className={TH}>Time</th>
                 </tr>
               </thead>
               <tbody>
@@ -459,7 +480,7 @@ export const DemoPanel: React.FC = () => {
                 ))}
                 {(state?.positions.length ?? 0) === 0 && (
                   <tr>
-                    <td className={TD} colSpan={5}>Aucune position ouverte.</td>
+                    <td className={TD} colSpan={5}>No open positions.</td>
                   </tr>
                 )}
               </tbody>
@@ -469,15 +490,15 @@ export const DemoPanel: React.FC = () => {
 
         <Card className='bg-gray-800 border-gray-700'>
           <CardHeader>
-            <CardTitle className='text-white'>Trades du wallet suivi</CardTitle>
+            <CardTitle className='text-white'>Followed wallet trades</CardTitle>
           </CardHeader>
           <CardContent className='overflow-x-auto'>
             <table className='w-full text-sm'>
               <thead>
                 <tr>
-                  <th className={TH}>Heure</th>
+                  <th className={TH}>Time</th>
                   <th className={TH}>Wallet</th>
-                  <th className={TH}>Sens</th>
+                  <th className={TH}>Side</th>
                   <th className={TH}>Token</th>
                   <th className={TH}>SOL</th>
                   <th className={TH}>Type</th>
@@ -488,19 +509,19 @@ export const DemoPanel: React.FC = () => {
                   <tr key={`${ev.signature}-${ev.wallet}`}>
                     <td className={TD}>{fmtTime(ev.time)}</td>
                     <td className={TD}>{ev.label}</td>
-                    <td className={`${TD} ${ev.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>{ev.side === 'buy' ? 'Achat' : 'Vente'}</td>
+                    <td className={`${TD} ${ev.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</td>
                     <td className={TD}>
                       <a className='text-blue-400 hover:text-blue-300' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
                         {short(ev.mint)}
                       </a>
                     </td>
                     <td className={TD}>{ev.sol.toFixed(3)}</td>
-                    <td className={TD}>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (non simule)'}</td>
+                    <td className={TD}>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (not simulated)'}</td>
                   </tr>
                 ))}
                 {(state?.events.length ?? 0) === 0 && (
                   <tr>
-                    <td className={TD} colSpan={6}>En attente d'un trade du wallet...</td>
+                    <td className={TD} colSpan={6}>Waiting for a wallet trade...</td>
                   </tr>
                 )}
               </tbody>
@@ -511,19 +532,19 @@ export const DemoPanel: React.FC = () => {
 
       <Card className='bg-gray-800 border-gray-700'>
         <CardHeader>
-          <CardTitle className='text-white'>Trades simules fermes</CardTitle>
+          <CardTitle className='text-white'>Closed simulated trades</CardTitle>
         </CardHeader>
         <CardContent className='overflow-x-auto'>
           <table className='w-full text-sm'>
             <thead>
               <tr>
-                <th className={TH}>Heure</th>
+                <th className={TH}>Time</th>
                 <th className={TH}>Wallet</th>
                 <th className={TH}>Token</th>
-                <th className={TH}>Delai</th>
-                <th className={TH}>Vs cible</th>
-                <th className={TH}>Duree</th>
-                <th className={TH}>Sortie</th>
+                <th className={TH}>Delay</th>
+                <th className={TH}>Vs target</th>
+                <th className={TH}>Held</th>
+                <th className={TH}>Exit</th>
                 <th className={TH}>PnL (SOL)</th>
                 <th className={TH}>PnL</th>
               </tr>
@@ -541,14 +562,14 @@ export const DemoPanel: React.FC = () => {
                   <td className={TD}>{t.delayMs} ms</td>
                   <td className={TD}>{fmtPct(t.slipVsTargetPct)}</td>
                   <td className={TD}>{t.heldSec} s</td>
-                  <td className={TD}>{t.reason}</td>
+                  <td className={TD}>{translateText(t.reason)}</td>
                   <td className={`${TD} ${colorOf(t.pnlSol)}`}>{fmtSol(t.pnlSol)}</td>
                   <td className={`${TD} ${colorOf(t.pnlPct)}`}>{fmtPct(t.pnlPct)}</td>
                 </tr>
               ))}
               {(state?.trades.length ?? 0) === 0 && (
                 <tr>
-                  <td className={TD} colSpan={9}>Aucun trade ferme pour le moment.</td>
+                  <td className={TD} colSpan={9}>No closed trades yet.</td>
                 </tr>
               )}
             </tbody>

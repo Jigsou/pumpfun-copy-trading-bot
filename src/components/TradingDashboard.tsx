@@ -60,7 +60,7 @@ export const TradingDashboard: React.FC = () => {
           <div className='space-y-2'>
             <h1 className='text-3xl font-bold text-white'>Pumpfun Copy Trading Bot</h1>
             <p className='text-gray-400 text-sm md:text-base leading-relaxed max-w-2xl'>
-              Commence par le mode demo : il simule les trades d'un wallet sans cle privee ni argent reel.
+              Start with demo mode: it simulates a wallet's trades with no private key and no real money.
             </p>
           </div>
           <StatusIndicator isConnected={isConnected} isBotRunning={isBotRunning} />
@@ -68,8 +68,8 @@ export const TradingDashboard: React.FC = () => {
 
         <Tabs defaultValue='demo' className='w-full'>
           <TabsList className='grid w-full grid-cols-2 bg-gray-800'>
-            <TabsTrigger value='demo'>Mode demo (sans argent)</TabsTrigger>
-            <TabsTrigger value='real'>Bot reel (cle privee requise)</TabsTrigger>
+            <TabsTrigger value='demo'>Demo mode (no money)</TabsTrigger>
+            <TabsTrigger value='real'>Real bot (private key required)</TabsTrigger>
           </TabsList>
 
           <TabsContent value='demo' className='mt-6'>
@@ -78,7 +78,7 @@ export const TradingDashboard: React.FC = () => {
 
           <TabsContent value='real' className='mt-6 space-y-6'>
             <div className='rounded-md border border-red-600 bg-red-900/20 p-3 text-sm text-red-200'>
-              Attention : ce bot signe de vraies transactions avec ta cle privee. N'utilise qu'un wallet jetable, et seulement apres avoir valide le mode demo.
+              Warning: this bot signs real transactions with your private key. Only use a throwaway wallet, and only after validating demo mode.
             </div>
 
             <BotControls
