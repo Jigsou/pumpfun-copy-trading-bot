@@ -106,7 +106,7 @@ async function handleDemo(ws, data) {
   }
 }
 
-// ---------- Mise a jour depuis GitHub (git pull + redemarrage si necessaire) ----------
+// ---------- Mise a jour depuis GitHub (git pull, changement de canal, redemarrage si necessaire) ----------
 async function handleApp(ws, data) {
   const send = (obj) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -115,7 +115,7 @@ async function handleApp(ws, data) {
     send({ type: 'app_version', ...(await updater.version()) });
     return;
   }
-  if (data.type !== 'app_update') return;
+  if (data.type !== 'app_update' && data.type !== 'app_switch') return;
   if (!ws.origin || !UPDATE_ORIGINS.has(ws.origin)) {
     send({
       type: 'app_update_result',
@@ -124,7 +124,12 @@ async function handleApp(ws, data) {
     });
     return;
   }
-  const result = await updater.run({ confirmed: data.confirmed === true }, (message) => send({ type: 'app_update_progress', message }));
+  const progress = (message) => send({ type: 'app_update_progress', message });
+  const options = { confirmed: data.confirmed === true };
+  const result =
+    data.type === 'app_switch'
+      ? await updater.switchChannel(String(data.branch ?? ''), options, progress)
+      : await updater.run(options, progress);
   send({ type: 'app_update_result', ...result });
   if (result.exitCode) {
     try {
