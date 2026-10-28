@@ -1,9 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import {
+  Activity,
+  ExternalLink,
+  Play,
+  Plus,
+  Radio,
+  RotateCcw,
+  ShieldCheck,
+  SlidersHorizontal,
+  Square,
+  Target,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  Wallet,
+} from 'lucide-react';
 
 const WS_URL = 'ws://127.0.0.1:3001';
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -112,10 +123,40 @@ const short = (a: string) => `${a.slice(0, 4)}...${a.slice(-4)}`;
 const fmtPct = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`);
 const fmtSol = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(4)}`);
 const fmtTime = (t: number) => new Date(t).toLocaleTimeString('en-GB');
-const colorOf = (v: number | null | undefined) => (v == null ? 'text-gray-400' : v >= 0 ? 'text-green-400' : 'text-red-400');
+const tone = (v: number | null | undefined) => (v == null ? 'text-slate-400' : v >= 0 ? 'text-emerald-400' : 'text-rose-400');
 
-const TH = 'text-left text-gray-400 font-normal px-2 py-1';
-const TD = 'px-2 py-1 border-t border-gray-700';
+interface PanelProps {
+  title: string;
+  icon?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}
+const Panel: React.FC<PanelProps> = ({ title, icon, right, children }) => (
+  <section className='panel'>
+    <header className='panel-head'>
+      <div className='flex items-center gap-2 text-slate-200'>
+        {icon}
+        <h2 className='panel-title'>{title}</h2>
+      </div>
+      {right}
+    </header>
+    <div className='panel-body'>{children}</div>
+  </section>
+);
+
+interface StatProps {
+  label: string;
+  value: string;
+  sub?: string;
+  valueClass?: string;
+}
+const Stat: React.FC<StatProps> = ({ label, value, sub, valueClass = '' }) => (
+  <div className='stat'>
+    <div className='stat-label'>{label}</div>
+    <div className={`stat-value ${valueClass}`}>{value}</div>
+    {sub && <div className='stat-sub'>{sub}</div>}
+  </div>
+);
 
 export const DemoPanel: React.FC = () => {
   const [serverUp, setServerUp] = useState(false);
@@ -237,345 +278,325 @@ export const DemoPanel: React.FC = () => {
   const stats = state?.stats ?? [];
   const totalN = stats.reduce((a, s) => a + s.n, 0);
   const slowest = stats.length ? stats[stats.length - 1] : null;
+  const positions = state?.positions ?? [];
+  const events = state?.events ?? [];
+  const trades = state?.trades ?? [];
 
   let verdict = 'Start the simulator and let it run.';
-  let verdictColor = 'text-gray-300';
+  let verdictClass = 'info';
   if (slowest && state) {
     const perDelay = Math.max(...stats.map((s) => s.n));
     if (perDelay < 50) {
       verdict = `Not enough data: ${perDelay}/50 closed trades for the delay with the most data. Do not conclude anything yet.`;
+      verdictClass = 'warn';
     } else if (slowest.totalPnlSol <= 0) {
       verdict = `At a ${slowest.delayMs} ms delay, the simulated PnL is negative (${fmtSol(slowest.totalPnlSol)} SOL). Copying this wallet would lose money at this delay.`;
-      verdictColor = 'text-red-400';
+      verdictClass = 'error';
     } else {
       verdict = `PnL is positive even at ${slowest.delayMs} ms (${fmtSol(slowest.totalPnlSol)} SOL). Promising, but keep running for several days before risking real money.`;
-      verdictColor = 'text-green-400';
+      verdictClass = 'good';
     }
   }
 
+  const inputField = (id: string, label: string, value: string, onChange: (v: string) => void, full = false) => (
+    <div className={`field ${full ? 'col-span-2' : ''}`}>
+      <label htmlFor={id}>{label}</label>
+      <input id={id} className='input' value={value} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+
   return (
     <div className='space-y-6'>
-      <div className='rounded-md border border-yellow-600 bg-yellow-900/20 p-3 text-sm text-yellow-200'>
-        DEMO MODE: no private key, no transaction sent. The simulator reads the blockchain (free Helius) and computes what you would have
-        paid, including fees, slippage and a delay of your choice.
+      <div className='alert info flex items-start gap-3'>
+        <ShieldCheck className='w-4 h-4 mt-0.5 shrink-0' />
+        <span>
+          DEMO MODE: no private key, no transaction sent. The simulator reads the blockchain (free Helius) and computes what you would have
+          paid, including fees, slippage and a delay of your choice.
+        </span>
       </div>
 
-      <Card className='bg-gray-800 border-gray-700'>
-        <CardHeader>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <CardTitle className='text-white'>Simulator</CardTitle>
-            <div className='flex flex-wrap gap-2'>
-              <Badge variant='outline' className={serverUp ? 'text-green-400 border-green-400' : 'text-red-400 border-red-400'}>
-                {serverUp ? 'Local server OK' : 'Local server unreachable'}
-              </Badge>
-              <Badge variant='outline' className={running ? 'text-green-400 border-green-400' : 'text-gray-400 border-gray-500'}>
-                {running ? 'Simulation running' : 'Stopped'}
-              </Badge>
-              <Badge variant='outline' className={state?.connected ? 'text-green-400 border-green-400' : 'text-gray-400 border-gray-500'}>
-                {state?.connected ? 'Helius connected' : 'Helius disconnected'}
-              </Badge>
-            </div>
+      <div className='panel'>
+        <div className='panel-body flex flex-wrap items-center justify-between gap-4'>
+          <div className='flex flex-wrap items-center gap-2'>
+            <span className='pill'>
+              <span className={`dot ${serverUp ? 'on' : 'off'}`} />
+              {serverUp ? 'Local server OK' : 'Local server unreachable'}
+            </span>
+            <span className='pill'>
+              <span className={`dot ${running ? 'on' : ''}`} />
+              {running ? 'Simulation running' : 'Stopped'}
+            </span>
+            <span className='pill'>
+              <span className={`dot ${state?.connected ? 'on' : ''}`} />
+              {state?.connected ? 'Helius connected' : 'Helius disconnected'}
+            </span>
           </div>
-        </CardHeader>
-        <CardContent className='space-y-4'>
-          <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
-            <div className='space-y-2 md:col-span-3'>
-              <Label htmlFor='heliusKey' className='text-gray-300'>Helius API key (free, saved in this browser)</Label>
-              <Input
-                id='heliusKey'
-                type='password'
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                className='bg-gray-900 border-gray-600 text-white'
-                placeholder='Paste your Helius key here'
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='buySol' className='text-gray-300'>Amount per trade (SOL)</Label>
-              <Input id='buySol' value={form.buySol} onChange={(e) => setForm({ ...form, buySol: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='delays' className='text-gray-300'>Delays tested at the same time (ms)</Label>
-              <Input id='delays' value={form.delays} onChange={(e) => setForm({ ...form, delays: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='timeoutMin' className='text-gray-300'>Max hold time (minutes)</Label>
-              <Input id='timeoutMin' value={form.timeoutMin} onChange={(e) => setForm({ ...form, timeoutMin: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='feePct' className='text-gray-300'>Pump.fun fee (%)</Label>
-              <Input id='feePct' value={form.feePct} onChange={(e) => setForm({ ...form, feePct: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='cost' className='text-gray-300'>Cost per transaction (SOL)</Label>
-              <Input id='cost' value={form.costPerTxSol} onChange={(e) => setForm({ ...form, costPerTxSol: e.target.value })} className='bg-gray-900 border-gray-600 text-white' />
-            </div>
-          </div>
-
           <div className='flex flex-wrap gap-2'>
             {!running ? (
-              <Button onClick={handleStart} className='bg-green-600 hover:bg-green-700'>Start simulation</Button>
+              <button className='btn btn-primary' onClick={handleStart}>
+                <Play className='w-4 h-4' />
+                Start simulation
+              </button>
             ) : (
-              <Button onClick={() => send({ type: 'demo_stop' })} className='bg-red-600 hover:bg-red-700'>Stop</Button>
+              <button className='btn btn-stop' onClick={() => send({ type: 'demo_stop' })}>
+                <Square className='w-4 h-4' />
+                Stop
+              </button>
             )}
-            <Button
-              variant='outline'
-              className='border-gray-600 text-gray-300 hover:bg-gray-700'
-              disabled={!running}
-              onClick={() => send({ type: 'demo_update_settings', settings: currentSettings() })}
-            >
+            <button className='btn btn-ghost' disabled={!running} onClick={() => send({ type: 'demo_update_settings', settings: currentSettings() })}>
+              <SlidersHorizontal className='w-4 h-4' />
               Apply settings (next trades)
-            </Button>
-            <Button variant='outline' className='border-gray-600 text-gray-300 hover:bg-gray-700' onClick={() => send({ type: 'demo_reset' })}>
+            </button>
+            <button className='btn btn-ghost' onClick={() => send({ type: 'demo_reset' })}>
+              <RotateCcw className='w-4 h-4' />
               Reset stats
-            </Button>
+            </button>
           </div>
-
-          {error && <div className='rounded-md border border-red-600 bg-red-900/20 p-2 text-sm text-red-300'>{error}</div>}
-          {state?.lastError && (
-            <div className='rounded-md border border-orange-600 bg-orange-900/20 p-2 text-xs text-orange-300'>
-              Last error ({fmtTime(state.lastError.time)}): {translateText(state.lastError.message)}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className='bg-gray-800 border-gray-700'>
-        <CardHeader>
-          <CardTitle className='text-white'>Followed wallets</CardTitle>
-        </CardHeader>
-        <CardContent className='space-y-4'>
-          <div className='grid grid-cols-1 md:grid-cols-[2fr_1fr_auto] gap-2'>
-            <Input value={newAddr} onChange={(e) => setNewAddr(e.target.value)} placeholder='Address of the wallet to follow' className='bg-gray-900 border-gray-600 text-white' />
-            <Input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder='Name (optional)' className='bg-gray-900 border-gray-600 text-white' />
-            <Button onClick={handleAddWallet} className='bg-blue-600 hover:bg-blue-700'>Add</Button>
-          </div>
-          <p className='text-xs text-gray-400'>
-            While the simulation is running, adding, removing or isolating a wallet applies immediately, without restarting.
-            Always verify the address on Solscan: impersonators exist.
-          </p>
-          <div className='overflow-x-auto'>
-            <table className='w-full text-sm'>
-              <thead>
-                <tr>
-                  <th className={TH}>Name</th>
-                  <th className={TH}>Address</th>
-                  <th className={TH}>Buys</th>
-                  <th className={TH}>Sells</th>
-                  <th className={TH}>Last trade</th>
-                  <th className={TH}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {wallets.map((w) => {
-                  const ws = walletState(w.address);
-                  return (
-                    <tr key={w.address}>
-                      <td className={TD}>{w.label}</td>
-                      <td className={TD}>
-                        <a className='text-blue-400 hover:text-blue-300' href={`https://solscan.io/account/${w.address}`} target='_blank' rel='noopener noreferrer'>
-                          {short(w.address)}
-                        </a>
-                      </td>
-                      <td className={TD}>{ws?.buys ?? 0}</td>
-                      <td className={TD}>{ws?.sells ?? 0}</td>
-                      <td className={TD}>{ws?.lastSeen ? fmtTime(ws.lastSeen) : '-'}</td>
-                      <td className={`${TD} space-x-2`}>
-                        <Button size='sm' variant='outline' className='border-gray-600 text-gray-300 hover:bg-gray-700' onClick={() => handleOnlyThis(w)}>
-                          Follow only this one
-                        </Button>
-                        <Button size='sm' variant='outline' className='border-gray-600 text-red-300 hover:bg-gray-700' onClick={() => handleRemoveWallet(w.address)}>
-                          Remove
-                        </Button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {wallets.length === 0 && (
-                  <tr>
-                    <td className={TD} colSpan={6}>No wallets. Add an address above.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className='bg-gray-800 border-gray-700'>
-        <CardHeader>
-          <CardTitle className='text-white'>Results by execution delay</CardTitle>
-        </CardHeader>
-        <CardContent className='space-y-3'>
-          <p className={`text-sm ${verdictColor}`}>{verdict}</p>
-          <div className='overflow-x-auto'>
-            <table className='w-full text-sm'>
-              <thead>
-                <tr>
-                  <th className={TH}>Delay</th>
-                  <th className={TH}>Closed trades</th>
-                  <th className={TH}>Win rate</th>
-                  <th className={TH}>Total PnL (SOL)</th>
-                  <th className={TH}>Average PnL</th>
-                  <th className={TH}>Price paid vs target (median)</th>
-                  <th className={TH}>Unpriced</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.map((s) => (
-                  <tr key={s.delayMs}>
-                    <td className={TD}>{s.delayMs} ms</td>
-                    <td className={TD}>{s.n}</td>
-                    <td className={TD}>{s.winRate == null ? '-' : `${(s.winRate * 100).toFixed(0)} %`}</td>
-                    <td className={`${TD} ${colorOf(s.n ? s.totalPnlSol : null)}`}>{s.n ? fmtSol(s.totalPnlSol) : '-'}</td>
-                    <td className={`${TD} ${colorOf(s.avgPnlPct)}`}>{fmtPct(s.avgPnlPct)}</td>
-                    <td className={TD}>{fmtPct(s.medianSlipPct)}</td>
-                    <td className={TD}>{s.unpriced}</td>
-                  </tr>
-                ))}
-                {stats.length === 0 && (
-                  <tr>
-                    <td className={TD} colSpan={7}>No data yet.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <p className='text-xs text-gray-400'>
-            Total: {totalN} simulated trades. Skipped (PumpSwap, finished curve or stale): {state?.skipped ?? 0}. You need at least 50 trades per
-            delay before drawing any conclusion.
-          </p>
-        </CardContent>
-      </Card>
-
-      <div className='grid grid-cols-1 xl:grid-cols-2 gap-6'>
-        <Card className='bg-gray-800 border-gray-700'>
-          <CardHeader>
-            <CardTitle className='text-white'>Open simulated positions ({state?.positions.length ?? 0})</CardTitle>
-          </CardHeader>
-          <CardContent className='overflow-x-auto'>
-            <table className='w-full text-sm'>
-              <thead>
-                <tr>
-                  <th className={TH}>Wallet</th>
-                  <th className={TH}>Token</th>
-                  <th className={TH}>Delay</th>
-                  <th className={TH}>Vs target</th>
-                  <th className={TH}>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state?.positions ?? []).map((p) => (
-                  <tr key={p.key}>
-                    <td className={TD}>{p.label}</td>
-                    <td className={TD}>
-                      <a className='text-blue-400 hover:text-blue-300' href={`https://solscan.io/token/${p.mint}`} target='_blank' rel='noopener noreferrer'>
-                        {short(p.mint)}
-                      </a>
-                    </td>
-                    <td className={TD}>{p.delayMs} ms</td>
-                    <td className={`${TD} ${colorOf(-p.slipVsTargetPct)}`}>{fmtPct(p.slipVsTargetPct)}</td>
-                    <td className={TD}>{fmtTime(p.openedAt)}</td>
-                  </tr>
-                ))}
-                {(state?.positions.length ?? 0) === 0 && (
-                  <tr>
-                    <td className={TD} colSpan={5}>No open positions.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-
-        <Card className='bg-gray-800 border-gray-700'>
-          <CardHeader>
-            <CardTitle className='text-white'>Followed wallet trades</CardTitle>
-          </CardHeader>
-          <CardContent className='overflow-x-auto'>
-            <table className='w-full text-sm'>
-              <thead>
-                <tr>
-                  <th className={TH}>Time</th>
-                  <th className={TH}>Wallet</th>
-                  <th className={TH}>Side</th>
-                  <th className={TH}>Token</th>
-                  <th className={TH}>SOL</th>
-                  <th className={TH}>Type</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state?.events ?? []).map((ev) => (
-                  <tr key={`${ev.signature}-${ev.wallet}`}>
-                    <td className={TD}>{fmtTime(ev.time)}</td>
-                    <td className={TD}>{ev.label}</td>
-                    <td className={`${TD} ${ev.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</td>
-                    <td className={TD}>
-                      <a className='text-blue-400 hover:text-blue-300' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
-                        {short(ev.mint)}
-                      </a>
-                    </td>
-                    <td className={TD}>{ev.sol.toFixed(3)}</td>
-                    <td className={TD}>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (not simulated)'}</td>
-                  </tr>
-                ))}
-                {(state?.events.length ?? 0) === 0 && (
-                  <tr>
-                    <td className={TD} colSpan={6}>Waiting for a wallet trade...</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
+        </div>
       </div>
 
-      <Card className='bg-gray-800 border-gray-700'>
-        <CardHeader>
-          <CardTitle className='text-white'>Closed simulated trades</CardTitle>
-        </CardHeader>
-        <CardContent className='overflow-x-auto'>
-          <table className='w-full text-sm'>
-            <thead>
-              <tr>
-                <th className={TH}>Time</th>
-                <th className={TH}>Wallet</th>
-                <th className={TH}>Token</th>
-                <th className={TH}>Delay</th>
-                <th className={TH}>Vs target</th>
-                <th className={TH}>Held</th>
-                <th className={TH}>Exit</th>
-                <th className={TH}>PnL (SOL)</th>
-                <th className={TH}>PnL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(state?.trades ?? []).slice(0, 50).map((t, i) => (
-                <tr key={`${t.time}-${t.mint}-${t.delayMs}-${i}`}>
-                  <td className={TD}>{fmtTime(t.time)}</td>
-                  <td className={TD}>{t.label}</td>
-                  <td className={TD}>
-                    <a className='text-blue-400 hover:text-blue-300' href={`https://solscan.io/token/${t.mint}`} target='_blank' rel='noopener noreferrer'>
-                      {short(t.mint)}
-                    </a>
-                  </td>
-                  <td className={TD}>{t.delayMs} ms</td>
-                  <td className={TD}>{fmtPct(t.slipVsTargetPct)}</td>
-                  <td className={TD}>{t.heldSec} s</td>
-                  <td className={TD}>{translateText(t.reason)}</td>
-                  <td className={`${TD} ${colorOf(t.pnlSol)}`}>{fmtSol(t.pnlSol)}</td>
-                  <td className={`${TD} ${colorOf(t.pnlPct)}`}>{fmtPct(t.pnlPct)}</td>
-                </tr>
+      {error && <div className='alert error'>{error}</div>}
+      {state?.lastError && (
+        <div className='alert warn text-xs'>
+          Last error ({fmtTime(state.lastError.time)}): {translateText(state.lastError.message)}
+        </div>
+      )}
+
+      <div className='grid grid-cols-2 lg:grid-cols-4 gap-4'>
+        <Stat
+          label={slowest ? `Net PnL at ${slowest.delayMs} ms` : 'Net PnL'}
+          value={slowest && slowest.n ? `${fmtSol(slowest.totalPnlSol)} SOL` : '-'}
+          sub='Slowest delay tested'
+          valueClass={tone(slowest && slowest.n ? slowest.totalPnlSol : null)}
+        />
+        <Stat
+          label='Win rate'
+          value={slowest && slowest.winRate != null ? `${(slowest.winRate * 100).toFixed(0)} %` : '-'}
+          sub={slowest ? `at ${slowest.delayMs} ms` : 'No data yet'}
+        />
+        <Stat label='Closed trades' value={String(totalN)} sub={`${state?.skipped ?? 0} skipped`} />
+        <Stat label='Open positions' value={String(positions.length)} sub={`${state?.wallets.length ?? 0} wallet(s) followed`} />
+      </div>
+
+      <div className={`alert ${verdictClass}`}>{verdict}</div>
+
+      <div className='grid grid-cols-1 lg:grid-cols-3 gap-6'>
+        <div className='lg:col-span-2 space-y-6'>
+          <Panel title='Results by execution delay' icon={<Activity className='w-4 h-4 text-violet-400' />}>
+            <div className='panel-scroll'>
+              <table className='data-table'>
+                <thead>
+                  <tr>
+                    <th>Delay</th>
+                    <th>Closed</th>
+                    <th>Win rate</th>
+                    <th>Total PnL (SOL)</th>
+                    <th>Avg PnL</th>
+                    <th>Paid vs target</th>
+                    <th>Unpriced</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.map((s) => (
+                    <tr key={s.delayMs}>
+                      <td className='font-semibold'>{s.delayMs} ms</td>
+                      <td>{s.n}</td>
+                      <td>
+                        <div className='flex items-center gap-2'>
+                          <div className='bar w-16'>
+                            <span style={{ width: `${(s.winRate ?? 0) * 100}%` }} />
+                          </div>
+                          {s.winRate == null ? '-' : `${(s.winRate * 100).toFixed(0)} %`}
+                        </div>
+                      </td>
+                      <td className={tone(s.n ? s.totalPnlSol : null)}>{s.n ? fmtSol(s.totalPnlSol) : '-'}</td>
+                      <td className={tone(s.avgPnlPct)}>{fmtPct(s.avgPnlPct)}</td>
+                      <td>{fmtPct(s.medianSlipPct)}</td>
+                      <td>{s.unpriced}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {stats.length === 0 && <div className='empty'>No data yet.</div>}
+            </div>
+            <p className='text-xs text-slate-400 mt-3'>
+              Skipped (PumpSwap, finished curve or stale): {state?.skipped ?? 0}. You need at least 50 trades per delay before drawing any
+              conclusion.
+            </p>
+          </Panel>
+
+          <Panel
+            title='Followed wallet trades'
+            icon={<Radio className='w-4 h-4 text-cyan-400' />}
+            right={<span className='chip neutral'>{events.length} recent</span>}
+          >
+            {events.length === 0 && <div className='empty'>Waiting for a wallet trade...</div>}
+            <ul>
+              {events.slice(0, 12).map((ev) => (
+                <li key={`${ev.signature}-${ev.wallet}`} className='feed-item'>
+                  <span className={`chip ${ev.side === 'buy' ? 'good' : 'bad'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</span>
+                  <span className='font-semibold tabular-nums'>{ev.sol.toFixed(3)} SOL</span>
+                  <a className='link' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
+                    {short(ev.mint)}
+                    <ExternalLink className='w-3 h-3' />
+                  </a>
+                  <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (not simulated)'}</span>
+                  <span className='ml-auto text-slate-400 text-xs'>
+                    {ev.label} - {fmtTime(ev.time)}
+                  </span>
+                </li>
               ))}
-              {(state?.trades.length ?? 0) === 0 && (
-                <tr>
-                  <td className={TD} colSpan={9}>No closed trades yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+            </ul>
+          </Panel>
+
+          <Panel title={`Open simulated positions (${positions.length})`} icon={<TrendingUp className='w-4 h-4 text-emerald-400' />}>
+            <div className='panel-scroll'>
+              <table className='data-table'>
+                <thead>
+                  <tr>
+                    <th>Wallet</th>
+                    <th>Token</th>
+                    <th>Delay</th>
+                    <th>Vs target</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {positions.map((p) => (
+                    <tr key={p.key}>
+                      <td>{p.label}</td>
+                      <td>
+                        <a className='link' href={`https://solscan.io/token/${p.mint}`} target='_blank' rel='noopener noreferrer'>
+                          {short(p.mint)}
+                          <ExternalLink className='w-3 h-3' />
+                        </a>
+                      </td>
+                      <td>{p.delayMs} ms</td>
+                      <td className={tone(-p.slipVsTargetPct)}>{fmtPct(p.slipVsTargetPct)}</td>
+                      <td>{fmtTime(p.openedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {positions.length === 0 && <div className='empty'>No open positions.</div>}
+            </div>
+          </Panel>
+
+          <Panel title='Closed simulated trades' icon={<TrendingDown className='w-4 h-4 text-rose-400' />}>
+            <div className='panel-scroll'>
+              <table className='data-table'>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Wallet</th>
+                    <th>Token</th>
+                    <th>Delay</th>
+                    <th>Vs target</th>
+                    <th>Held</th>
+                    <th>Exit</th>
+                    <th>PnL (SOL)</th>
+                    <th>PnL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.slice(0, 50).map((t, i) => (
+                    <tr key={`${t.time}-${t.mint}-${t.delayMs}-${i}`}>
+                      <td>{fmtTime(t.time)}</td>
+                      <td>{t.label}</td>
+                      <td>
+                        <a className='link' href={`https://solscan.io/token/${t.mint}`} target='_blank' rel='noopener noreferrer'>
+                          {short(t.mint)}
+                          <ExternalLink className='w-3 h-3' />
+                        </a>
+                      </td>
+                      <td>{t.delayMs} ms</td>
+                      <td>{fmtPct(t.slipVsTargetPct)}</td>
+                      <td>{t.heldSec} s</td>
+                      <td>{translateText(t.reason)}</td>
+                      <td className={tone(t.pnlSol)}>{fmtSol(t.pnlSol)}</td>
+                      <td>
+                        <span className={`chip ${t.pnlPct == null ? 'neutral' : t.pnlPct >= 0 ? 'good' : 'bad'}`}>{fmtPct(t.pnlPct)}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {trades.length === 0 && <div className='empty'>No closed trades yet.</div>}
+            </div>
+          </Panel>
+        </div>
+
+        <div className='space-y-6'>
+          <Panel title='Settings' icon={<SlidersHorizontal className='w-4 h-4 text-violet-400' />}>
+            <div className='grid grid-cols-2 gap-3'>
+              <div className='field col-span-2'>
+                <label htmlFor='heliusKey'>Helius API key (free, saved in this browser)</label>
+                <input
+                  id='heliusKey'
+                  type='password'
+                  className='input'
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder='Paste your Helius key here'
+                />
+              </div>
+              {inputField('buySol', 'Amount per trade (SOL)', form.buySol, (v) => setForm({ ...form, buySol: v }))}
+              {inputField('timeoutMin', 'Max hold (minutes)', form.timeoutMin, (v) => setForm({ ...form, timeoutMin: v }))}
+              {inputField('delays', 'Delays tested at the same time (ms)', form.delays, (v) => setForm({ ...form, delays: v }), true)}
+              {inputField('feePct', 'Pump.fun fee (%)', form.feePct, (v) => setForm({ ...form, feePct: v }))}
+              {inputField('cost', 'Cost per tx (SOL)', form.costPerTxSol, (v) => setForm({ ...form, costPerTxSol: v }))}
+            </div>
+          </Panel>
+
+          <Panel title='Followed wallets' icon={<Wallet className='w-4 h-4 text-cyan-400' />}>
+            <ul>
+              {wallets.map((w) => {
+                const ws = walletState(w.address);
+                return (
+                  <li key={w.address} className='wallet-row'>
+                    <div className='avatar'>{w.label.slice(0, 2).toUpperCase()}</div>
+                    <div className='min-w-0 flex-1'>
+                      <div className='truncate font-medium'>{w.label}</div>
+                      <a className='link text-xs' href={`https://solscan.io/account/${w.address}`} target='_blank' rel='noopener noreferrer'>
+                        {short(w.address)}
+                        <ExternalLink className='w-3 h-3' />
+                      </a>
+                      <div className='flex flex-wrap gap-1.5 mt-1.5'>
+                        <span className='chip good'>{ws?.buys ?? 0} buys</span>
+                        <span className='chip bad'>{ws?.sells ?? 0} sells</span>
+                        <span className='chip neutral'>{ws?.lastSeen ? fmtTime(ws.lastSeen) : 'no trade yet'}</span>
+                      </div>
+                    </div>
+                    <div className='flex gap-1.5'>
+                      <button className='icon-btn' title='Follow only this one' onClick={() => handleOnlyThis(w)}>
+                        <Target className='w-4 h-4' />
+                      </button>
+                      <button className='icon-btn danger' title='Remove' onClick={() => handleRemoveWallet(w.address)}>
+                        <Trash2 className='w-4 h-4' />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            {wallets.length === 0 && <div className='empty'>No wallets. Add an address below.</div>}
+            <div className='space-y-2 mt-3 pt-3 border-t border-white/10'>
+              <input className='input' value={newAddr} onChange={(e) => setNewAddr(e.target.value)} placeholder='Address of the wallet to follow' />
+              <div className='flex gap-2'>
+                <input className='input' value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder='Name (optional)' />
+                <button className='btn btn-primary' onClick={handleAddWallet}>
+                  <Plus className='w-4 h-4' />
+                  Add
+                </button>
+              </div>
+              <p className='text-xs text-slate-400'>
+                While the simulation is running, adding, removing or isolating a wallet applies immediately. Always verify the address on
+                Solscan: impersonators exist.
+              </p>
+            </div>
+          </Panel>
+        </div>
+      </div>
     </div>
   );
 };

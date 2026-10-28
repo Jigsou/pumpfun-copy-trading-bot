@@ -1,4 +1,6 @@
 import React from 'react';
+import '@/modern.css';
+import { Zap } from 'lucide-react';
 import { ConfigPanel } from './ConfigPanel';
 import { LiveFeed } from './LiveFeed';
 import { PositionsTable } from './PositionsTable';
@@ -10,6 +12,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
 import { useTradingOperations } from '@/hooks/useTradingOperations';
 import { useBotControls } from '@/hooks/useBotControls';
+
+const TAB_LIST = 'grid w-full grid-cols-2 h-auto p-1 rounded-xl bg-white/5 border border-white/10';
+const TAB_TRIGGER =
+  'rounded-lg py-2.5 text-slate-400 data-[state=active]:text-white data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-600 data-[state=active]:to-indigo-600 data-[state=active]:shadow-lg';
 
 export const TradingDashboard: React.FC = () => {
   const {
@@ -53,23 +59,26 @@ export const TradingDashboard: React.FC = () => {
   });
 
   return (
-    <div className='min-h-screen bg-gray-950 text-white p-4'>
-      <div className='max-w-7xl mx-auto space-y-6'>
-        {/* Header */}
-        <div className='flex flex-col md:flex-row items-start md:items-center justify-between gap-4'>
-          <div className='space-y-2'>
-            <h1 className='text-3xl font-bold text-white'>Pumpfun Copy Trading Bot</h1>
-            <p className='text-gray-400 text-sm md:text-base leading-relaxed max-w-2xl'>
-              Start with demo mode: it simulates a wallet's trades with no private key and no real money.
-            </p>
+    <div className='modern p-4'>
+      <header className='app-header'>
+        <div className='max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4'>
+          <div className='flex items-center gap-3'>
+            <div className='logo-mark'>
+              <Zap className='w-5 h-5' />
+            </div>
+            <div>
+              <h1 className='text-lg font-bold leading-tight'>Pumpfun Copy Trading Bot</h1>
+              <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
+            </div>
           </div>
-          <StatusIndicator isConnected={isConnected} isBotRunning={isBotRunning} />
         </div>
+      </header>
 
+      <div className='max-w-7xl mx-auto space-y-6 pb-10'>
         <Tabs defaultValue='demo' className='w-full'>
-          <TabsList className='grid w-full grid-cols-2 bg-gray-800'>
-            <TabsTrigger value='demo'>Demo mode (no money)</TabsTrigger>
-            <TabsTrigger value='real'>Real bot (private key required)</TabsTrigger>
+          <TabsList className={TAB_LIST}>
+            <TabsTrigger value='demo' className={TAB_TRIGGER}>Demo mode (no money)</TabsTrigger>
+            <TabsTrigger value='real' className={TAB_TRIGGER}>Real bot (private key required)</TabsTrigger>
           </TabsList>
 
           <TabsContent value='demo' className='mt-6'>
@@ -77,28 +86,33 @@ export const TradingDashboard: React.FC = () => {
           </TabsContent>
 
           <TabsContent value='real' className='mt-6 space-y-6'>
-            <div className='rounded-md border border-red-600 bg-red-900/20 p-3 text-sm text-red-200'>
+            <div className='alert error'>
               Warning: this bot signs real transactions with your private key. Only use a throwaway wallet, and only after validating demo mode.
             </div>
 
-            <BotControls
-              isBotRunning={isBotRunning}
-              onStart={handleStartBot}
-              onStop={handleStopBot}
-              onClearHistory={handleClearHistory}
-            />
+            <div className='flex flex-wrap items-start gap-4'>
+              <div className='flex-1 min-w-[280px]'>
+                <BotControls
+                  isBotRunning={isBotRunning}
+                  onStart={handleStartBot}
+                  onStop={handleStopBot}
+                  onClearHistory={handleClearHistory}
+                />
+              </div>
+              <StatusIndicator isConnected={isConnected} isBotRunning={isBotRunning} />
+            </div>
 
             <div className='grid grid-cols-1 lg:grid-cols-3 gap-6'>
               <div className='lg:col-span-2 space-y-6'>
                 <Tabs defaultValue='config' className='w-full'>
-                  <TabsList className='grid w-full grid-cols-2 bg-gray-800'>
-                    <TabsTrigger value='config'>Configuration</TabsTrigger>
-                    <TabsTrigger value='feed'>Live Feed</TabsTrigger>
+                  <TabsList className={TAB_LIST}>
+                    <TabsTrigger value='config' className={TAB_TRIGGER}>Configuration</TabsTrigger>
+                    <TabsTrigger value='feed' className={TAB_TRIGGER}>Live Feed</TabsTrigger>
                   </TabsList>
-                  <TabsContent value='config'>
+                  <TabsContent value='config' className='mt-4'>
                     <ConfigPanel config={config} onConfigChange={setConfig} />
                   </TabsContent>
-                  <TabsContent value='feed'>
+                  <TabsContent value='feed' className='mt-4'>
                     <LiveFeed trades={trades} />
                   </TabsContent>
                 </Tabs>
