@@ -101,7 +101,21 @@ export const UpdateButton: React.FC = () => {
           } else if (msg.type === 'app_update_result') {
             if (msg.branch) setBranch(msg.branch);
             if (msg.head) setHead(msg.head);
-            if (!msg.ok) {
+            if (msg.needsStash) {
+              const files = Array.isArray(msg.dirtyFiles) ? msg.dirtyFiles.slice(0, 8).join(', ') : '';
+              const yes = window.confirm(
+                'Local changes would be overwritten in: ' + files + '. Save them aside (git stash) and continue? You can restore them later with git stash pop.'
+              );
+              if (yes) {
+                pendingRef.current = { ...pendingRef.current, stash: true };
+                setPhase('working');
+                setMessage('Working...');
+                ws.send(JSON.stringify({ ...pendingRef.current, confirmed: false }));
+              } else {
+                setPhase('idle');
+                setMessage('Cancelled. Nothing was changed.');
+              }
+            } else if (!msg.ok) {
               setPhase('error');
               setMessage(String(msg.message));
             } else if (msg.needsConfirm) {

@@ -27,10 +27,11 @@ export function planFor(files) {
 export function createUpdater({ cwd, isDemoRunning = () => false, supervised = false, npmExecPath = null, nodePath = process.execPath, gitTimeoutMs = 90000 }) {
   let busy = false;
 
-  const git = async (args, timeout = 60000) => {
+  const gitRaw = async (args, timeout = 60000) => {
     const { stdout } = await execFileAsync('git', args, { cwd, timeout, windowsHide: true, maxBuffer: 5 * 1024 * 1024 });
-    return stdout.trim();
+    return String(stdout);
   };
+  const git = async (args, timeout = 60000) => (await gitRaw(args, timeout)).trim();
   const short = (sha) => String(sha).slice(0, 7);
   const explain = (e) => String(e?.stderr || e?.message || e).trim().slice(0, 500);
 
@@ -40,6 +41,31 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
     } catch {
       return null;
     }
+  }
+
+  async function dirtyFiles() {
+    const out = await gitRaw(['status', '--porcelain', '--untracked-files=no']);
+    return out.split(NL).filter((l) => l.trim()).map((l) => l.slice(3).trim());
+  }
+
+  async function stashLocal(label) {
+    await git(['-c', 'user.name=pumpbot', '-c', 'user.email=pumpbot@localhost', 'stash', 'push', '-m', 'pumpbot auto-stash before ' + label]);
+  }
+
+  function needsStash(action, branch, conflicts) {
+    return {
+      ok: false,
+      needsStash: true,
+      action,
+      branch,
+      dirtyFiles: conflicts.slice(0, 30),
+      message: 'Your local changes in ' + conflicts.slice(0, 6).join(', ') + ' would be overwritten.',
+    };
+  }
+
+  function withStashNote(result, count) {
+    if (!result.ok) return result;
+    return { ...result, stashed: true, message: result.message + ' Your local changes to ' + count + ' file(s) were saved aside (git stash); restore them with: git stash pop.' };
   }
 
   async function version() {
@@ -98,7 +124,7 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
     return { ...base, restarting: false, message: lead + '. No restart needed, the page reloads by itself.' };
   }
 
-  async function run({ confirmed = false } = {}, progress = () => {}) {
+  async function run({ confirmed = false, stash = false } = {}, progress = () => {}) {
     if (busy) return { ok: false, message: 'An update is already running.' };
     busy = true;
     try {
@@ -136,6 +162,8 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
       }
 
       const incoming = lines(await git(['diff', '--name-only', 'HEAD', '@{u}']));
+      const conflicts = (await dirtyFiles()).filter((f) => incoming.includes(f));
+      if (conflicts.length && !stash) return needsStash('update', branch, conflicts);
       const expected = planFor(incoming);
       if (expected.restartBackend && supervised && isDemoRunning() && !confirmed) {
         return {
@@ -147,20 +175,29 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
         };
       }
 
+      if (conflicts.length) {
+        progress('Saving your local changes aside...');
+        try {
+          await stashLocal('update');
+        } catch (e) {
+          return { ok: false, message: 'git stash failed: ' + explain(e) };
+        }
+      }
       progress('Pulling ' + behind + ' commit(s)...');
       try {
         await git(['pull', '--ff-only', '--quiet'], 120000);
       } catch (e) {
-        return { ok: false, message: 'git pull failed: ' + explain(e) + ' If you edited tracked files, check git status in the project folder.' };
+        return { ok: false, message: 'git pull failed: ' + explain(e) };
       }
       const after = await git(['rev-parse', 'HEAD']);
-      return await finish(before, after, 'Updated to ' + short(after), progress);
+      const result = await finish(before, after, 'Updated to ' + short(after), progress);
+      return conflicts.length ? withStashNote(result, conflicts.length) : result;
     } finally {
       busy = false;
     }
   }
 
-  async function switchChannel(branch, { confirmed = false } = {}, progress = () => {}) {
+  async function switchChannel(branch, { confirmed = false, stash = false } = {}, progress = () => {}) {
     if (!CHANNELS.includes(branch)) return { ok: false, message: 'Unknown channel: ' + branch };
     if (busy) return { ok: false, message: 'An update is already running.' };
     busy = true;
@@ -185,9 +222,9 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
       } catch {
         return { ok: false, message: 'Branch ' + branch + ' does not exist on GitHub.' };
       }
-      const dirty = await git(['status', '--porcelain', '--untracked-files=no']);
-      if (dirty) return { ok: false, message: 'You have local changes to tracked files, so switching could lose them. Check git status in the project folder.' };
       const incoming = lines(await git(['diff', '--name-only', 'HEAD', target]));
+      const conflicts = (await dirtyFiles()).filter((f) => incoming.includes(f));
+      if (conflicts.length && !stash) return needsStash('switch', branch, conflicts);
       const expected = planFor(incoming);
       if (expected.restartBackend && supervised && isDemoRunning() && !confirmed) {
         return {
@@ -198,6 +235,14 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
           files: incoming.slice(0, 30),
           message: 'Switching to ' + branch + ' restarts the local server. The simulation resumes automatically, but the statistics start again from zero.',
         };
+      }
+      if (conflicts.length) {
+        progress('Saving your local changes aside...');
+        try {
+          await stashLocal('switching to ' + branch);
+        } catch (e) {
+          return { ok: false, message: 'git stash failed: ' + explain(e) };
+        }
       }
       progress('Switching to ' + branch + '...');
       try {
@@ -212,7 +257,8 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
       }
       const after = await git(['rev-parse', 'HEAD']);
       if (after === before) return { ok: true, changed: false, head: short(after), branch, message: 'Now on ' + branch + ' (same code).' };
-      return await finish(before, after, 'Switched to ' + branch + ' (' + short(after) + ')', progress);
+      const result = await finish(before, after, 'Switched to ' + branch + ' (' + short(after) + ')', progress);
+      return conflicts.length ? withStashNote(result, conflicts.length) : result;
     } finally {
       busy = false;
     }
