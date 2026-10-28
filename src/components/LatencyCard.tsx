@@ -11,10 +11,21 @@ interface Latency {
   medianFetchMs: number | null;
 }
 
+interface Coverage {
+  walletTrades: number;
+  onCurve: number;
+  onAmm: number;
+  skipped: number;
+  unpriced: number;
+  rejected: number;
+  lastMismatch: Record<string, unknown> | null;
+}
+
 const ms = (v: number | null | undefined) => (v == null ? '-' : `${Math.round(v)} ms`);
 
 export const LatencyCard: React.FC = () => {
   const [lat, setLat] = useState<Latency | null>(null);
+  const [cov, setCov] = useState<Coverage | null>(null);
 
   useEffect(() => {
     let closed = false;
@@ -26,7 +37,10 @@ export const LatencyCard: React.FC = () => {
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
-          if (msg.type === 'demo_state' && msg.state && msg.state.latency) setLat(msg.state.latency as Latency);
+          if (msg.type === 'demo_state' && msg.state) {
+            if (msg.state.latency) setLat(msg.state.latency as Latency);
+            if (msg.state.coverage) setCov(msg.state.coverage as Coverage);
+          }
         } catch {
           // ignored message
         }
@@ -76,6 +90,27 @@ export const LatencyCard: React.FC = () => {
           w32tm /resync
         </div>
       )}
+      {cov && (cov.walletTrades > 0 || cov.rejected > 0) && (
+        <div className='panel'>
+          <div className='panel-body text-sm'>
+            <div className='font-semibold mb-2'>Why some trades have no profit figure</div>
+            <ul className='text-slate-400 space-y-1'>
+              <li>
+                {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve (simulated), {cov.onAmm} on PumpSwap (not simulated
+                yet, because the token already left the curve).
+              </li>
+              <li>{cov.unpriced} simulated trades were closed without a price because the token moved to PumpSwap before the exit.</li>
+              <li>{cov.rejected} simulated entries were rejected because their price looked impossible compared with the wallet fill.</li>
+            </ul>
+            {cov.lastMismatch && (
+              <details className='mt-3'>
+                <summary className='cursor-pointer text-slate-300'>Diagnostic of the last rejected entry</summary>
+                <pre className='text-xs text-slate-400 overflow-x-auto mt-2'>{JSON.stringify(cov.lastMismatch, null, 2)}</pre>
+              </details>
+            )}
+          </div>
+        </div>
+      )}
       <details className='panel help'>
         <summary className='panel-body'>How does this work, and how do I read the results?</summary>
         <div className='panel-body' style={{ paddingTop: 0 }}>
@@ -97,6 +132,10 @@ export const LatencyCard: React.FC = () => {
             <li>
               Read each row top to bottom: if PnL is positive at 200 ms but negative at 1000 and 3000 ms, the edge disappears with realistic
               latency and copying will lose money. You need at least 50 closed trades per row before the numbers mean anything.
+            </li>
+            <li>
+              Each real wallet trade is replayed once per delay, so one trade produces several simulated rows. Wallets often split one exit into
+              several sells, which also multiplies the rows.
             </li>
             <li>
               Detection lag has about one second of precision, because the blockchain timestamps blocks in whole seconds. Processing time is

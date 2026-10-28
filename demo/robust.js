@@ -1,6 +1,7 @@
 import { DemoEngine } from './engine.js';
 
 export const STALE_AFTER_S = 30;
+export const IMPLAUSIBLE_SLIP_PCT = -50;
 
 const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 const pct = (a, p) => {
@@ -86,6 +87,9 @@ export class RobustDemoEngine extends DemoEngine {
     this.staleAfterS = opts.staleAfterS ?? STALE_AFTER_S;
     this.inflight = new Map();
     this.lagSamples = [];
+    this.lastCurve = new Map();
+    this.rejected = 0;
+    this.lastMismatch = null;
   }
 
   async _getTx(signature) {
@@ -101,9 +105,44 @@ export class RobustDemoEngine extends DemoEngine {
   _readCurve(mint) {
     const existing = this.inflight.get(mint);
     if (existing) return existing;
-    const p = super._readCurve(mint).finally(() => this.inflight.delete(mint));
+    const p = super
+      ._readCurve(mint)
+      .then((c) => {
+        if (c) this.lastCurve.set(mint, { vToken: c.vToken, vSol: c.vSol, complete: c.complete, readAt: Date.now() });
+        if (this.lastCurve.size > 200) this.lastCurve.delete(this.lastCurve.keys().next().value);
+        return c;
+      })
+      .finally(() => this.inflight.delete(mint));
     this.inflight.set(mint, p);
     return p;
+  }
+
+  _rejectImplausible(pos) {
+    this.positions.delete(pos.key);
+    this.rejected++;
+    this.lastMismatch = {
+      mint: pos.mint,
+      delayMs: pos.delayMs,
+      botEntryPriceSol: pos.entryPrice,
+      walletFillPriceSol: pos.targetPrice,
+      differencePct: pos.slipVsTargetPct,
+      lastCurveRead: this.lastCurve.get(pos.mint) ?? null,
+    };
+    this._changed();
+  }
+
+  async _open(wallet, trade, delayMs, detectedAt) {
+    await super._open(wallet, trade, delayMs, detectedAt);
+    const pos = this.positions.get(`${wallet.address}|${trade.mint}|${delayMs}`);
+    if (pos && pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT) this._rejectImplausible(pos);
+  }
+
+  async _close(pos, reason) {
+    if (pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT && this.positions.has(pos.key)) {
+      this._rejectImplausible(pos);
+      return;
+    }
+    return super._close(pos, reason);
   }
 
   _handleTrade(wallet, trade, tx, detectedAt, signature) {
@@ -131,14 +170,30 @@ export class RobustDemoEngine extends DemoEngine {
     };
   }
 
+  _coverage() {
+    const onAmm = this.events.filter((e) => e.venue !== 'pump').length;
+    return {
+      walletTrades: this.events.length,
+      onCurve: this.events.length - onAmm,
+      onAmm,
+      skipped: this.skipped,
+      unpriced: this.trades.filter((t) => t.pnlSol === null).length,
+      rejected: this.rejected,
+      lastMismatch: this.lastMismatch,
+    };
+  }
+
   snapshot() {
     const s = super.snapshot();
     s.latency = this._latencyStats();
+    s.coverage = this._coverage();
     return s;
   }
 
   reset() {
     super.reset();
     this.lagSamples = [];
+    this.rejected = 0;
+    this.lastMismatch = null;
   }
 }
