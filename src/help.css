@@ -95,6 +95,14 @@
 .hp-tl i { display: block; width: 22px; height: 22px; border-radius: 50%; margin: 0 auto 8px; background: var(--panel-2); border: 2px solid var(--accent); position: relative; z-index: 1; }
 .hp-tl strong { display: block; color: var(--text); font-size: 0.8rem; margin-bottom: 2px; }
 
+.hp-faq { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.hp-faq + .hp-faq { margin-top: -8px; }
+.hp-faq summary { cursor: pointer; padding: 12px 14px; font-weight: 600; color: var(--text); list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hp-faq summary::-webkit-details-marker { display: none; }
+.hp-faq summary::after { content: '+'; color: var(--muted); font-size: 1.1rem; line-height: 1; }
+.hp-faq[open] summary::after { content: '-'; }
+.hp-faq > div { padding: 0 14px 14px; color: #aab2bf; font-size: 0.9rem; }
+
 .hp-empty { padding: 40px 20px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 12px; }
 
 @media (max-width: 920px) {
