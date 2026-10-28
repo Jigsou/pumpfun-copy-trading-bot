@@ -125,7 +125,7 @@ async function handleApp(ws, data) {
     return;
   }
   const progress = (message) => send({ type: 'app_update_progress', message });
-  const options = { confirmed: data.confirmed === true };
+  const options = { confirmed: data.confirmed === true, stash: data.stash === true };
   const result =
     data.type === 'app_switch'
       ? await updater.switchChannel(String(data.branch ?? ''), options, progress)
