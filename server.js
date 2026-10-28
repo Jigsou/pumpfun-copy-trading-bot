@@ -9,18 +9,32 @@ import { fileURLToPath } from 'node:url';
 import { PublicKey } from '@solana/web3.js';
 import { PUMP_PROGRAM } from './demo/engine.js';
 import { RobustDemoEngine, createRpc } from './demo/robust.js';
+import { createUpdater } from './demo/updater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+const NL = String.fromCharCode(10);
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+function isLocalOrigin(origin) {
+  try {
+    const u = new URL(origin);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && LOCAL_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+const UI_PORT = Number(process.env.UI_PORT || 8080);
+const UPDATE_ORIGINS = new Set([`http://localhost:${UI_PORT}`, `http://127.0.0.1:${UI_PORT}`, `http://[::1]:${UI_PORT}`]);
 
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({
   server,
-  verifyClient: ({ origin }) => !origin || LOCAL_ORIGIN.test(origin),
+  verifyClient: ({ origin }) => !origin || isLocalOrigin(origin),
 });
 
-app.use(cors({ origin: LOCAL_ORIGIN }));
+app.use(cors({ origin: (origin, cb) => cb(null, !origin || isLocalOrigin(origin)) }));
 
 // ---------- Mode demo (aucune cle privee, aucune transaction) ----------
 const PUMP_PK = new PublicKey(PUMP_PROGRAM);
@@ -34,11 +48,18 @@ const demo = new RobustDemoEngine({
   appendLog: (file, obj) => {
     try {
       fs.mkdirSync(LOG_DIR, { recursive: true });
-      fs.appendFileSync(path.join(LOG_DIR, `${file}.jsonl`), JSON.stringify(obj) + '\n');
+      fs.appendFileSync(path.join(LOG_DIR, `${file}.jsonl`), JSON.stringify(obj) + NL);
     } catch (e) {
       console.error('Log demo:', e.message);
     }
   },
+});
+
+const updater = createUpdater({
+  cwd: __dirname,
+  isDemoRunning: () => demo.running,
+  supervised: process.env.PUMP_SUPERVISED === '1',
+  npmExecPath: process.env.npm_execpath || null,
 });
 
 const demoClients = new Set();
@@ -85,10 +106,41 @@ async function handleDemo(ws, data) {
   }
 }
 
+// ---------- Mise a jour depuis GitHub (git pull + redemarrage si necessaire) ----------
+async function handleApp(ws, data) {
+  const send = (obj) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  };
+  if (data.type === 'app_version') {
+    send({ type: 'app_version', ...(await updater.version()) });
+    return;
+  }
+  if (data.type !== 'app_update') return;
+  if (!ws.origin || !UPDATE_ORIGINS.has(ws.origin)) {
+    send({
+      type: 'app_update_result',
+      ok: false,
+      message: `Update refused: open the app on http://localhost:${UI_PORT} (current origin: ${ws.origin ?? 'none'}).`,
+    });
+    return;
+  }
+  const result = await updater.run({ confirmed: data.confirmed === true }, (message) => send({ type: 'app_update_progress', message }));
+  send({ type: 'app_update_result', ...result });
+  if (result.exitCode) {
+    try {
+      await demo.stop();
+    } catch {
+      // closing anyway
+    }
+    setTimeout(() => process.exit(result.exitCode), 700);
+  }
+}
+
 // ---------- Relais CoinVera du bot reel (inchange) ----------
 const connections = new Map();
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  ws.origin = req.headers.origin ?? null;
   console.log('New client connected');
 
   ws.on('message', async (message) => {
@@ -97,6 +149,11 @@ wss.on('connection', (ws) => {
 
       if (typeof data.type === 'string' && data.type.startsWith('demo_')) {
         await handleDemo(ws, data);
+        return;
+      }
+
+      if (typeof data.type === 'string' && data.type.startsWith('app_')) {
+        await handleApp(ws, data);
         return;
       }
 

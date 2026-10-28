@@ -1,0 +1,137 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+const NL = String.fromCharCode(10);
+
+export const RESTART_BACKEND = 42;
+export const RESTART_ALL = 43;
+
+const lines = (text) => String(text).split(NL).map((s) => s.trim()).filter(Boolean);
+
+export function planFor(files) {
+  const has = (fn) => files.some(fn);
+  const depsChanged = has((f) => f === 'package.json' || f === 'package-lock.json');
+  const startChanged = files.includes('start.js');
+  const frontendConfig = has((f) => f.startsWith('vite.config.') || f.startsWith('tailwind.config.') || f.startsWith('postcss.config.'));
+  const backend = has((f) => f === 'server.js' || (f.startsWith('demo/') && f.endsWith('.js')));
+  return {
+    depsChanged,
+    startChanged,
+    restartBackend: backend || depsChanged,
+    restartFrontend: depsChanged || frontendConfig,
+  };
+}
+
+export function createUpdater({ cwd, isDemoRunning = () => false, supervised = false, npmExecPath = null, nodePath = process.execPath, gitTimeoutMs = 90000 }) {
+  let busy = false;
+
+  const git = async (args, timeout = 60000) => {
+    const { stdout } = await execFileAsync('git', args, { cwd, timeout, windowsHide: true, maxBuffer: 5 * 1024 * 1024 });
+    return stdout.trim();
+  };
+  const short = (sha) => String(sha).slice(0, 7);
+  const explain = (e) => String(e?.stderr || e?.message || e).trim().slice(0, 500);
+
+  async function version() {
+    try {
+      const head = await git(['rev-parse', '--short', 'HEAD']);
+      let branch = '';
+      try {
+        branch = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+      } catch {
+        branch = '';
+      }
+      return { head, branch, supervised };
+    } catch {
+      return { head: null, branch: null, supervised };
+    }
+  }
+
+  async function run({ confirmed = false } = {}, progress = () => {}) {
+    if (busy) return { ok: false, message: 'An update is already running.' };
+    busy = true;
+    try {
+      try {
+        await git(['rev-parse', '--is-inside-work-tree']);
+      } catch (e) {
+        return { ok: false, message: 'Not a git repository, or git is not installed: ' + explain(e) };
+      }
+      const before = await git(['rev-parse', 'HEAD']);
+      progress('Checking GitHub...');
+      try {
+        await git(['fetch', '--quiet'], gitTimeoutMs);
+      } catch (e) {
+        return { ok: false, message: 'git fetch failed: ' + explain(e) };
+      }
+      let upstream;
+      try {
+        upstream = await git(['rev-parse', '@{u}']);
+      } catch {
+        return { ok: false, message: 'No upstream branch is configured for this checkout.' };
+      }
+      if (upstream === before) return { ok: true, changed: false, head: short(before), message: 'Already up to date (' + short(before) + ').' };
+      let behind = 1;
+      try {
+        behind = Number(await git(['rev-list', '--count', 'HEAD..@{u}']));
+      } catch {
+        behind = 1;
+      }
+      if (behind === 0) return { ok: true, changed: false, head: short(before), message: 'Nothing to pull: your copy is ahead of GitHub (' + short(before) + ').' };
+
+      const incoming = lines(await git(['diff', '--name-only', 'HEAD', '@{u}']));
+      const expected = planFor(incoming);
+      if (expected.restartBackend && supervised && isDemoRunning() && !confirmed) {
+        return {
+          ok: true,
+          needsConfirm: true,
+          files: incoming.slice(0, 30),
+          message: 'This update restarts the local server. The simulation resumes automatically, but the statistics start again from zero.',
+        };
+      }
+
+      progress('Pulling ' + behind + ' commit(s)...');
+      try {
+        await git(['pull', '--ff-only', '--quiet'], 120000);
+      } catch (e) {
+        return { ok: false, message: 'git pull failed: ' + explain(e) + ' If you edited tracked files, check git status in the project folder.' };
+      }
+      const after = await git(['rev-parse', 'HEAD']);
+      const files = lines(await git(['diff', '--name-only', before, after]));
+      const plan = planFor(files);
+      const base = { ok: true, changed: true, from: short(before), to: short(after), head: short(after), files: files.slice(0, 30) };
+
+      if (plan.depsChanged) {
+        if (!npmExecPath) {
+          return { ...base, restarting: false, manual: true, message: 'Updated to ' + short(after) + '. Dependencies changed: stop the server, run npm install --ignore-scripts, then npm start.' };
+        }
+        progress('Installing dependencies...');
+        try {
+          await execFileAsync(nodePath, [npmExecPath, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd, timeout: 300000, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
+        } catch (e) {
+          return { ok: false, message: 'Pulled ' + short(after) + ' but npm install failed: ' + explain(e) };
+        }
+      }
+
+      if (plan.startChanged) {
+        return { ...base, restarting: false, manual: true, message: 'Updated to ' + short(after) + '. The launcher (start.js) changed: stop the server with Ctrl+C and run npm start again.' };
+      }
+      if (plan.restartBackend || plan.restartFrontend) {
+        if (!supervised) {
+          return { ...base, restarting: false, manual: true, message: 'Updated to ' + short(after) + '. A restart is needed: stop the server with Ctrl+C and run npm start (it was not started through npm start).' };
+        }
+        return {
+          ...base,
+          restarting: true,
+          exitCode: plan.restartFrontend ? RESTART_ALL : RESTART_BACKEND,
+          message: 'Updated to ' + short(after) + '. Restarting the local server...',
+        };
+      }
+      return { ...base, restarting: false, message: 'Updated to ' + short(after) + '. No restart needed, the page reloads by itself.' };
+    } finally {
+      busy = false;
+    }
+  }
+
+  return { run, version };
+}

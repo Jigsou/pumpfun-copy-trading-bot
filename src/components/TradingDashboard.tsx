@@ -9,6 +9,7 @@ import { StatusIndicator } from './StatusIndicator';
 import { DemoPanel } from './DemoPanel';
 import { StrategyFilters } from './StrategyFilters';
 import { LogReport } from './LogReport';
+import { UpdateButton } from './UpdateButton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
 import { useTradingOperations } from '@/hooks/useTradingOperations';
@@ -61,9 +62,12 @@ export const TradingDashboard: React.FC = () => {
   return (
     <div className='modern p-4'>
       <header className='app-header'>
-        <div className='max-w-[1400px] mx-auto'>
-          <h1 className='text-lg font-semibold leading-tight'>Pumpfun Copy Trading Bot</h1>
-          <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
+        <div className='max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-3'>
+          <div>
+            <h1 className='text-lg font-semibold leading-tight'>Pumpfun Copy Trading Bot</h1>
+            <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
+          </div>
+          <UpdateButton />
         </div>
       </header>
 
