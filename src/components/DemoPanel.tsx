@@ -462,8 +462,8 @@ export const DemoPanel: React.FC = () => {
               {stats.length === 0 && <div className='empty'>No data yet.</div>}
             </div>
             <p className='text-xs text-slate-400 mt-3'>
-              Skipped (PumpSwap, finished curve or stale): {state?.skipped ?? 0}. You need at least 50 trades per delay before drawing any
-              conclusion.
+              Skipped: {state?.skipped ?? 0} (open the Log at the bottom of the page for the reasons). You need at least 50 trades per delay
+              before drawing any conclusion.
             </p>
           </Panel>
 
@@ -488,7 +488,7 @@ export const DemoPanel: React.FC = () => {
                           {short(ev.mint)}
                           <ExternalLink className='w-3 h-3' />
                         </a>
-                        <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (not simulated)'}</span>
+                        <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap'}</span>
                         <span className='ml-auto text-slate-400 text-xs'>
                           {ev.label} - {fmtTime(ev.time)}
                         </span>
@@ -587,7 +587,7 @@ export const DemoPanel: React.FC = () => {
                     <div className='avatar'>{w.label.slice(0, 2).toUpperCase()}</div>
                     <div className='min-w-0 flex-1'>
                       <div className='truncate font-medium'>{w.label}</div>
-                      <a className='link text-xs' href={`https://solscan.io/account/${w.address}`} target='_blank' rel='noopener noreferrer'>
+                      <a className='link text-xs' href={`https://pump.fun/profile/${w.address}`} target='_blank' rel='noopener noreferrer' title='Open this trader on Pump.fun'>
                         {short(w.address)}
                         <ExternalLink className='w-3 h-3' />
                       </a>
@@ -648,10 +648,10 @@ export const DemoPanel: React.FC = () => {
             <Panel title='Why some trades have no profit figure'>
               <ul className='text-sm text-slate-400 space-y-1'>
                 <li>
-                  {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve (simulated), {cov.onAmm} on PumpSwap (not simulated
-                  yet).
+                  {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve, {cov.onAmm} on PumpSwap (simulated from the pool
+                  reserves when the pool is identified).
                 </li>
-                <li>{cov.unpriced} simulated trades closed without a price because the token moved to PumpSwap before the exit.</li>
+                <li>{cov.unpriced} simulated trades closed without a price (the curve or the pool could not be read at that moment).</li>
                 <li>{cov.rejected} simulated entries rejected because their price looked impossible compared with the wallet fill.</li>
               </ul>
               {cov.lastMismatch && (
