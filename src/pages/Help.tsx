@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, BookOpen, Search, X } from 'lucide-react';
 import '@/modern.css';
 import '@/help.css';
-import { HELP_SECTIONS } from '@/help/parts';
+import { HELP_SECTIONS } from '@/help/content';
 import { Kbd } from '@/help/ui';
 
 const Help: React.FC = () => {
