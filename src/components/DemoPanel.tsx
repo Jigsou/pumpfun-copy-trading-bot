@@ -4,15 +4,12 @@ import {
   ExternalLink,
   Play,
   Plus,
-  Radio,
   RotateCcw,
   ShieldCheck,
   SlidersHorizontal,
   Square,
   Target,
   Trash2,
-  TrendingDown,
-  TrendingUp,
   Wallet,
 } from 'lucide-react';
 
@@ -74,6 +71,23 @@ interface StatRow {
   avgPnlPct: number | null;
   medianSlipPct: number | null;
 }
+interface Latency {
+  samples: number;
+  avgChainLagMs: number | null;
+  medianChainLagMs: number | null;
+  p90ChainLagMs: number | null;
+  avgFetchMs: number | null;
+  medianFetchMs: number | null;
+}
+interface Coverage {
+  walletTrades: number;
+  onCurve: number;
+  onAmm: number;
+  skipped: number;
+  unpriced: number;
+  rejected: number;
+  lastMismatch: Record<string, unknown> | null;
+}
 interface DemoState {
   running: boolean;
   connected: boolean;
@@ -83,8 +97,12 @@ interface DemoState {
   events: EventRow[];
   stats: StatRow[];
   skipped: number;
+  latency?: Latency;
+  coverage?: Coverage;
   lastError: { message: string; time: number } | null;
 }
+
+type TabKey = 'feed' | 'open' | 'closed';
 
 const OLD_DEFAULT_LABEL = 'Cupsey ? (a verifier sur Solscan)';
 const DEFAULT_LABEL = 'Cupsey ? (verify on Solscan)';
@@ -123,6 +141,7 @@ const short = (a: string) => `${a.slice(0, 4)}...${a.slice(-4)}`;
 const fmtPct = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`);
 const fmtSol = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(4)}`);
 const fmtTime = (t: number) => new Date(t).toLocaleTimeString('en-GB');
+const fmtMs = (v: number | null | undefined) => (v == null ? '-' : `${Math.round(v)} ms`);
 const tone = (v: number | null | undefined) => (v == null ? 'text-slate-400' : v >= 0 ? 'text-emerald-400' : 'text-rose-400');
 
 interface PanelProps {
@@ -153,7 +172,9 @@ interface StatProps {
 const Stat: React.FC<StatProps> = ({ label, value, sub, valueClass = '' }) => (
   <div className='stat'>
     <div className='stat-label'>{label}</div>
-    <div className={`stat-value ${valueClass}`}>{value}</div>
+    <div className={`stat-value ${valueClass}`} style={{ fontSize: '1.25rem' }}>
+      {value}
+    </div>
     {sub && <div className='stat-sub'>{sub}</div>}
   </div>
 );
@@ -162,6 +183,7 @@ export const DemoPanel: React.FC = () => {
   const [serverUp, setServerUp] = useState(false);
   const [state, setState] = useState<DemoState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<TabKey>('feed');
   const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('demoHeliusKey') ?? '');
   const [wallets, setWallets] = useState<WalletEntry[]>(() =>
     loadJson<WalletEntry[]>('demoWallets', DEFAULT_WALLETS).map((w) => (w.label === OLD_DEFAULT_LABEL ? { ...w, label: DEFAULT_LABEL } : w))
@@ -281,6 +303,9 @@ export const DemoPanel: React.FC = () => {
   const positions = state?.positions ?? [];
   const events = state?.events ?? [];
   const trades = state?.trades ?? [];
+  const lat = state?.latency;
+  const cov = state?.coverage;
+  const clockWarning = !!lat && lat.medianChainLagMs != null && lat.medianChainLagMs < 0;
 
   let verdict = 'Start the simulator and let it run.';
   let verdictClass = 'info';
@@ -305,19 +330,28 @@ export const DemoPanel: React.FC = () => {
     </div>
   );
 
-  return (
-    <div className='space-y-6'>
-      <div className='alert info flex items-start gap-3'>
-        <ShieldCheck className='w-4 h-4 mt-0.5 shrink-0' />
-        <span>
-          DEMO MODE: no private key, no transaction sent. The simulator reads the blockchain (free Helius) and computes what you would have
-          paid, including fees, slippage and a delay of your choice.
-        </span>
-      </div>
+  const tabButton = (key: TabKey, label: string) => (
+    <button
+      key={key}
+      onClick={() => setTab(key)}
+      className={`px-3 py-1.5 rounded-md text-sm ${tab === key ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+    >
+      {label}
+    </button>
+  );
 
+  return (
+    <div className='space-y-5'>
       <div className='panel'>
-        <div className='panel-body flex flex-wrap items-center justify-between gap-4'>
+        <div className='panel-body flex flex-wrap items-center justify-between gap-3'>
           <div className='flex flex-wrap items-center gap-2'>
+            <span
+              className='chip neutral inline-flex items-center gap-1'
+              title='The simulator reads the blockchain (free Helius) and computes what you would have paid, including fees, slippage and a delay of your choice.'
+            >
+              <ShieldCheck className='w-3 h-3' />
+              Demo: no key, no transaction
+            </span>
             <span className='pill'>
               <span className={`dot ${serverUp ? 'on' : 'off'}`} />
               {serverUp ? 'Local server OK' : 'Local server unreachable'}
@@ -345,7 +379,7 @@ export const DemoPanel: React.FC = () => {
             )}
             <button className='btn btn-ghost' disabled={!running} onClick={() => send({ type: 'demo_update_settings', settings: currentSettings() })}>
               <SlidersHorizontal className='w-4 h-4' />
-              Apply settings (next trades)
+              Apply settings
             </button>
             <button className='btn btn-ghost' onClick={() => send({ type: 'demo_reset' })}>
               <RotateCcw className='w-4 h-4' />
@@ -361,8 +395,14 @@ export const DemoPanel: React.FC = () => {
           Last error ({fmtTime(state.lastError.time)}): {translateText(state.lastError.message)}
         </div>
       )}
+      {clockWarning && (
+        <div className='alert warn'>
+          Your PC clock is behind the blockchain clock, so the detection lag is understated. Sync it: open PowerShell as administrator and run
+          w32tm /resync
+        </div>
+      )}
 
-      <div className='grid grid-cols-2 lg:grid-cols-4 gap-4'>
+      <div className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3'>
         <Stat
           label={slowest ? `Net PnL at ${slowest.delayMs} ms` : 'Net PnL'}
           value={slowest && slowest.n ? `${fmtSol(slowest.totalPnlSol)} SOL` : '-'}
@@ -376,13 +416,15 @@ export const DemoPanel: React.FC = () => {
         />
         <Stat label='Closed trades' value={String(totalN)} sub={`${state?.skipped ?? 0} skipped`} />
         <Stat label='Open positions' value={String(positions.length)} sub={`${state?.wallets.length ?? 0} wallet(s) followed`} />
+        <Stat label='Detection lag' value={fmtMs(lat?.medianChainLagMs)} sub={`median - avg ${fmtMs(lat?.avgChainLagMs)}`} />
+        <Stat label='Processing time' value={fmtMs(lat?.avgFetchMs)} sub={`average - ${lat?.samples ?? 0} samples`} />
       </div>
 
       <div className={`alert ${verdictClass}`}>{verdict}</div>
 
-      <div className='grid grid-cols-1 lg:grid-cols-3 gap-6'>
-        <div className='lg:col-span-2 space-y-6'>
-          <Panel title='Results by execution delay' icon={<Activity className='w-4 h-4 text-violet-400' />}>
+      <div className='grid grid-cols-1 lg:grid-cols-12 gap-5'>
+        <div className='lg:col-span-7 space-y-5'>
+          <Panel title='Results by execution delay' icon={<Activity className='w-4 h-4 text-slate-400' />}>
             <div className='panel-scroll'>
               <table className='data-table'>
                 <thead>
@@ -403,7 +445,7 @@ export const DemoPanel: React.FC = () => {
                       <td>{s.n}</td>
                       <td>
                         <div className='flex items-center gap-2'>
-                          <div className='bar w-16'>
+                          <div className='bar w-14'>
                             <span style={{ width: `${(s.winRate ?? 0) * 100}%` }} />
                           </div>
                           {s.winRate == null ? '-' : `${(s.winRate * 100).toFixed(0)} %`}
@@ -425,130 +467,118 @@ export const DemoPanel: React.FC = () => {
             </p>
           </Panel>
 
-          <Panel
-            title='Followed wallet trades'
-            icon={<Radio className='w-4 h-4 text-cyan-400' />}
-            right={<span className='chip neutral'>{events.length} recent</span>}
-          >
-            {events.length === 0 && <div className='empty'>Waiting for a wallet trade...</div>}
-            <ul>
-              {events.slice(0, 12).map((ev) => (
-                <li key={`${ev.signature}-${ev.wallet}`} className='feed-item'>
-                  <span className={`chip ${ev.side === 'buy' ? 'good' : 'bad'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</span>
-                  <span className='font-semibold tabular-nums'>{ev.sol.toFixed(3)} SOL</span>
-                  <a className='link' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
-                    {short(ev.mint)}
-                    <ExternalLink className='w-3 h-3' />
-                  </a>
-                  <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (not simulated)'}</span>
-                  <span className='ml-auto text-slate-400 text-xs'>
-                    {ev.label} - {fmtTime(ev.time)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </Panel>
-
-          <Panel title={`Open simulated positions (${positions.length})`} icon={<TrendingUp className='w-4 h-4 text-emerald-400' />}>
-            <div className='panel-scroll'>
-              <table className='data-table'>
-                <thead>
-                  <tr>
-                    <th>Wallet</th>
-                    <th>Token</th>
-                    <th>Delay</th>
-                    <th>Vs target</th>
-                    <th>Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.map((p) => (
-                    <tr key={p.key}>
-                      <td>{p.label}</td>
-                      <td>
-                        <a className='link' href={`https://solscan.io/token/${p.mint}`} target='_blank' rel='noopener noreferrer'>
-                          {short(p.mint)}
+          <section className='panel'>
+            <header className='panel-head'>
+              <div className='inline-flex gap-1 p-1 rounded-lg border border-white/10'>
+                {tabButton('feed', `Wallet trades (${events.length})`)}
+                {tabButton('open', `Open positions (${positions.length})`)}
+                {tabButton('closed', `Closed trades (${trades.length})`)}
+              </div>
+            </header>
+            <div className='panel-body'>
+              {tab === 'feed' && (
+                <div>
+                  {events.length === 0 && <div className='empty'>Waiting for a wallet trade...</div>}
+                  <ul>
+                    {events.slice(0, 15).map((ev) => (
+                      <li key={`${ev.signature}-${ev.wallet}`} className='feed-item flex-wrap'>
+                        <span className={`chip ${ev.side === 'buy' ? 'good' : 'bad'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</span>
+                        <span className='font-semibold tabular-nums'>{ev.sol.toFixed(3)} SOL</span>
+                        <a className='link' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
+                          {short(ev.mint)}
                           <ExternalLink className='w-3 h-3' />
                         </a>
-                      </td>
-                      <td>{p.delayMs} ms</td>
-                      <td className={tone(-p.slipVsTargetPct)}>{fmtPct(p.slipVsTargetPct)}</td>
-                      <td>{fmtTime(p.openedAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {positions.length === 0 && <div className='empty'>No open positions.</div>}
-            </div>
-          </Panel>
+                        <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap (not simulated)'}</span>
+                        <span className='ml-auto text-slate-400 text-xs'>
+                          {ev.label} - {fmtTime(ev.time)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-          <Panel title='Closed simulated trades' icon={<TrendingDown className='w-4 h-4 text-rose-400' />}>
-            <div className='panel-scroll'>
-              <table className='data-table'>
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Wallet</th>
-                    <th>Token</th>
-                    <th>Delay</th>
-                    <th>Vs target</th>
-                    <th>Held</th>
-                    <th>Exit</th>
-                    <th>PnL (SOL)</th>
-                    <th>PnL</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.slice(0, 50).map((t, i) => (
-                    <tr key={`${t.time}-${t.mint}-${t.delayMs}-${i}`}>
-                      <td>{fmtTime(t.time)}</td>
-                      <td>{t.label}</td>
-                      <td>
-                        <a className='link' href={`https://solscan.io/token/${t.mint}`} target='_blank' rel='noopener noreferrer'>
-                          {short(t.mint)}
-                          <ExternalLink className='w-3 h-3' />
-                        </a>
-                      </td>
-                      <td>{t.delayMs} ms</td>
-                      <td>{fmtPct(t.slipVsTargetPct)}</td>
-                      <td>{t.heldSec} s</td>
-                      <td>{translateText(t.reason)}</td>
-                      <td className={tone(t.pnlSol)}>{fmtSol(t.pnlSol)}</td>
-                      <td>
-                        <span className={`chip ${t.pnlPct == null ? 'neutral' : t.pnlPct >= 0 ? 'good' : 'bad'}`}>{fmtPct(t.pnlPct)}</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {trades.length === 0 && <div className='empty'>No closed trades yet.</div>}
+              {tab === 'open' && (
+                <div className='panel-scroll'>
+                  <table className='data-table'>
+                    <thead>
+                      <tr>
+                        <th>Wallet</th>
+                        <th>Token</th>
+                        <th>Delay</th>
+                        <th>Vs target</th>
+                        <th>Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {positions.map((p) => (
+                        <tr key={p.key}>
+                          <td>{p.label}</td>
+                          <td>
+                            <a className='link' href={`https://solscan.io/token/${p.mint}`} target='_blank' rel='noopener noreferrer'>
+                              {short(p.mint)}
+                              <ExternalLink className='w-3 h-3' />
+                            </a>
+                          </td>
+                          <td>{p.delayMs} ms</td>
+                          <td className={tone(-p.slipVsTargetPct)}>{fmtPct(p.slipVsTargetPct)}</td>
+                          <td>{fmtTime(p.openedAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {positions.length === 0 && <div className='empty'>No open positions.</div>}
+                </div>
+              )}
+
+              {tab === 'closed' && (
+                <div className='panel-scroll'>
+                  <table className='data-table'>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Wallet</th>
+                        <th>Token</th>
+                        <th>Delay</th>
+                        <th>Vs target</th>
+                        <th>Held</th>
+                        <th>Exit</th>
+                        <th>PnL (SOL)</th>
+                        <th>PnL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trades.slice(0, 50).map((t, i) => (
+                        <tr key={`${t.time}-${t.mint}-${t.delayMs}-${i}`}>
+                          <td>{fmtTime(t.time)}</td>
+                          <td>{t.label}</td>
+                          <td>
+                            <a className='link' href={`https://solscan.io/token/${t.mint}`} target='_blank' rel='noopener noreferrer'>
+                              {short(t.mint)}
+                              <ExternalLink className='w-3 h-3' />
+                            </a>
+                          </td>
+                          <td>{t.delayMs} ms</td>
+                          <td>{fmtPct(t.slipVsTargetPct)}</td>
+                          <td>{t.heldSec} s</td>
+                          <td>{translateText(t.reason)}</td>
+                          <td className={tone(t.pnlSol)}>{fmtSol(t.pnlSol)}</td>
+                          <td>
+                            <span className={`chip ${t.pnlPct == null ? 'neutral' : t.pnlPct >= 0 ? 'good' : 'bad'}`}>{fmtPct(t.pnlPct)}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {trades.length === 0 && <div className='empty'>No closed trades yet.</div>}
+                </div>
+              )}
             </div>
-          </Panel>
+          </section>
         </div>
 
-        <div className='space-y-6'>
-          <Panel title='Settings' icon={<SlidersHorizontal className='w-4 h-4 text-violet-400' />}>
-            <div className='grid grid-cols-2 gap-3'>
-              <div className='field col-span-2'>
-                <label htmlFor='heliusKey'>Helius API key (free, saved in this browser)</label>
-                <input
-                  id='heliusKey'
-                  type='password'
-                  className='input'
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder='Paste your Helius key here'
-                />
-              </div>
-              {inputField('buySol', 'Amount per trade (SOL)', form.buySol, (v) => setForm({ ...form, buySol: v }))}
-              {inputField('timeoutMin', 'Max hold (minutes)', form.timeoutMin, (v) => setForm({ ...form, timeoutMin: v }))}
-              {inputField('delays', 'Delays tested at the same time (ms)', form.delays, (v) => setForm({ ...form, delays: v }), true)}
-              {inputField('feePct', 'Pump.fun fee (%)', form.feePct, (v) => setForm({ ...form, feePct: v }))}
-              {inputField('cost', 'Cost per tx (SOL)', form.costPerTxSol, (v) => setForm({ ...form, costPerTxSol: v }))}
-            </div>
-          </Panel>
-
-          <Panel title='Followed wallets' icon={<Wallet className='w-4 h-4 text-cyan-400' />}>
+        <div className='lg:col-span-5 space-y-5'>
+          <Panel title='Followed wallets' icon={<Wallet className='w-4 h-4 text-slate-400' />}>
             <ul>
               {wallets.map((w) => {
                 const ws = walletState(w.address);
@@ -589,12 +619,78 @@ export const DemoPanel: React.FC = () => {
                   Add
                 </button>
               </div>
-              <p className='text-xs text-slate-400'>
-                While the simulation is running, adding, removing or isolating a wallet applies immediately. Always verify the address on
-                Solscan: impersonators exist.
-              </p>
+              <p className='text-xs text-slate-400'>Changes apply immediately while running. Always verify an address on Solscan: impersonators exist.</p>
             </div>
           </Panel>
+
+          <Panel title='Settings' icon={<SlidersHorizontal className='w-4 h-4 text-slate-400' />}>
+            <div className='grid grid-cols-2 gap-3'>
+              <div className='field col-span-2'>
+                <label htmlFor='heliusKey'>Helius API key (free, saved in this browser)</label>
+                <input
+                  id='heliusKey'
+                  type='password'
+                  className='input'
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder='Paste your Helius key here'
+                />
+              </div>
+              {inputField('buySol', 'Amount per trade (SOL)', form.buySol, (v) => setForm({ ...form, buySol: v }))}
+              {inputField('timeoutMin', 'Max hold (minutes)', form.timeoutMin, (v) => setForm({ ...form, timeoutMin: v }))}
+              {inputField('delays', 'Delays tested at the same time (ms)', form.delays, (v) => setForm({ ...form, delays: v }), true)}
+              {inputField('feePct', 'Pump.fun fee (%)', form.feePct, (v) => setForm({ ...form, feePct: v }))}
+              {inputField('cost', 'Cost per tx (SOL)', form.costPerTxSol, (v) => setForm({ ...form, costPerTxSol: v }))}
+            </div>
+          </Panel>
+
+          {cov && (cov.walletTrades > 0 || cov.rejected > 0) && (
+            <Panel title='Why some trades have no profit figure'>
+              <ul className='text-sm text-slate-400 space-y-1'>
+                <li>
+                  {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve (simulated), {cov.onAmm} on PumpSwap (not simulated
+                  yet).
+                </li>
+                <li>{cov.unpriced} simulated trades closed without a price because the token moved to PumpSwap before the exit.</li>
+                <li>{cov.rejected} simulated entries rejected because their price looked impossible compared with the wallet fill.</li>
+              </ul>
+              {cov.lastMismatch && (
+                <details className='mt-3'>
+                  <summary className='cursor-pointer text-slate-300 text-sm'>Diagnostic of the last rejected entry</summary>
+                  <pre className='text-xs text-slate-400 overflow-x-auto mt-2'>{JSON.stringify(cov.lastMismatch, null, 2)}</pre>
+                </details>
+              )}
+            </Panel>
+          )}
+
+          <details className='panel help'>
+            <summary className='panel-body'>How does this work, and how do I read the results?</summary>
+            <div className='panel-body' style={{ paddingTop: 0 }}>
+              <ol>
+                <li>The bot watches the followed wallet through Helius. It never touches your money and never needs a private key.</li>
+                <li>
+                  When the wallet buys a Pump.fun token, the bot waits for each delay you configured, reads the real price at that moment and
+                  computes what your buy would have cost, fees included.
+                </li>
+                <li>When the wallet sells, the bot simulates your sell after the same delay. Otherwise the position closes after the max hold time.</li>
+                <li>
+                  A delay is the time between the bot seeing the trade and your transaction landing. Real delay behind the wallet is roughly the
+                  detection lag plus the delay of the row you look at.
+                </li>
+                <li>
+                  200 ms is a theoretical best case, 1000 ms an optimized setup, 3000 ms typical for a simple bot. Trust the row that matches your
+                  real setup.
+                </li>
+                <li>
+                  If PnL is positive at 200 ms but negative at 1000 and 3000 ms, the edge disappears with realistic latency. You need at least 50
+                  closed trades per row.
+                </li>
+                <li>
+                  Each wallet trade is replayed once per delay, so one trade gives several rows. Detection lag has about one second of precision.
+                </li>
+              </ol>
+            </div>
+          </details>
         </div>
       </div>
     </div>

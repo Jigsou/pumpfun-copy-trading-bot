@@ -7,7 +7,6 @@ import { LogsPanel } from './LogsPanel';
 import { BotControls } from './BotControls';
 import { StatusIndicator } from './StatusIndicator';
 import { DemoPanel } from './DemoPanel';
-import { LatencyCard } from './LatencyCard';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
 import { useTradingOperations } from '@/hooks/useTradingOperations';
@@ -60,25 +59,24 @@ export const TradingDashboard: React.FC = () => {
   return (
     <div className='modern p-4'>
       <header className='app-header'>
-        <div className='max-w-7xl mx-auto'>
+        <div className='max-w-[1400px] mx-auto'>
           <h1 className='text-lg font-semibold leading-tight'>Pumpfun Copy Trading Bot</h1>
           <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
         </div>
       </header>
 
-      <div className='max-w-7xl mx-auto space-y-6 pb-10'>
+      <div className='max-w-[1400px] mx-auto space-y-5 pb-10'>
         <Tabs defaultValue='demo' className='w-full'>
           <TabsList className={TAB_LIST}>
             <TabsTrigger value='demo' className={TAB_TRIGGER}>Demo mode (no money)</TabsTrigger>
             <TabsTrigger value='real' className={TAB_TRIGGER}>Real bot (private key required)</TabsTrigger>
           </TabsList>
 
-          <TabsContent value='demo' className='mt-6 space-y-6'>
-            <LatencyCard />
+          <TabsContent value='demo' className='mt-5'>
             <DemoPanel />
           </TabsContent>
 
-          <TabsContent value='real' className='mt-6 space-y-6'>
+          <TabsContent value='real' className='mt-5 space-y-6'>
             <div className='alert error'>
               Warning: this bot signs real transactions with your private key. Only use a throwaway wallet, and only after validating demo mode.
             </div>
