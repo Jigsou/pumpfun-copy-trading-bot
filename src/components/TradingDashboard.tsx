@@ -7,6 +7,7 @@ import { LogsPanel } from './LogsPanel';
 import { BotControls } from './BotControls';
 import { StatusIndicator } from './StatusIndicator';
 import { DemoPanel } from './DemoPanel';
+import { LogReport } from './LogReport';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
 import { useTradingOperations } from '@/hooks/useTradingOperations';
@@ -72,8 +73,9 @@ export const TradingDashboard: React.FC = () => {
             <TabsTrigger value='real' className={TAB_TRIGGER}>Real bot (private key required)</TabsTrigger>
           </TabsList>
 
-          <TabsContent value='demo' className='mt-5'>
+          <TabsContent value='demo' className='mt-5 space-y-5'>
             <DemoPanel />
+            <LogReport />
           </TabsContent>
 
           <TabsContent value='real' className='mt-5 space-y-6'>
