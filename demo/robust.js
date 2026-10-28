@@ -2,6 +2,13 @@ import { DemoEngine } from './engine.js';
 
 export const STALE_AFTER_S = 30;
 
+const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+const pct = (a, p) => {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y);
+  return s[Math.min(s.length - 1, Math.floor(p * s.length))];
+};
+
 export function createRpc({ url, fetchImpl = globalThis.fetch, maxConcurrent = 4, minGapMs = 125, maxRetries = 6, baseBackoffMs = 600 } = {}) {
   let active = 0;
   let lastStart = 0;
@@ -78,6 +85,7 @@ export class RobustDemoEngine extends DemoEngine {
     super(deps);
     this.staleAfterS = opts.staleAfterS ?? STALE_AFTER_S;
     this.inflight = new Map();
+    this.lagSamples = [];
   }
 
   async _getTx(signature) {
@@ -96,5 +104,41 @@ export class RobustDemoEngine extends DemoEngine {
     const p = super._readCurve(mint).finally(() => this.inflight.delete(mint));
     this.inflight.set(mint, p);
     return p;
+  }
+
+  _handleTrade(wallet, trade, tx, detectedAt, signature) {
+    const chainLagMs = tx && tx.blockTime ? detectedAt - tx.blockTime * 1000 : null;
+    const p = super._handleTrade(wallet, trade, tx, detectedAt, signature);
+    const ev = this.events[0];
+    if (ev && ev.signature === signature && ev.wallet === wallet.address) {
+      ev.chainLagMs = chainLagMs;
+      this.lagSamples.push({ chainLagMs, fetchMs: ev.fetchMs });
+      if (this.lagSamples.length > 500) this.lagSamples.shift();
+    }
+    return p;
+  }
+
+  _latencyStats() {
+    const chain = this.lagSamples.map((x) => x.chainLagMs).filter((v) => v != null);
+    const fetchMs = this.lagSamples.map((x) => x.fetchMs);
+    return {
+      samples: this.lagSamples.length,
+      avgChainLagMs: avg(chain),
+      medianChainLagMs: pct(chain, 0.5),
+      p90ChainLagMs: pct(chain, 0.9),
+      avgFetchMs: avg(fetchMs),
+      medianFetchMs: pct(fetchMs, 0.5),
+    };
+  }
+
+  snapshot() {
+    const s = super.snapshot();
+    s.latency = this._latencyStats();
+    return s;
+  }
+
+  reset() {
+    super.reset();
+    this.lagSamples = [];
   }
 }

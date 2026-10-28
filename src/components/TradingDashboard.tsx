@@ -1,6 +1,5 @@
 import React from 'react';
 import '@/modern.css';
-import { Zap } from 'lucide-react';
 import { ConfigPanel } from './ConfigPanel';
 import { LiveFeed } from './LiveFeed';
 import { PositionsTable } from './PositionsTable';
@@ -8,14 +7,14 @@ import { LogsPanel } from './LogsPanel';
 import { BotControls } from './BotControls';
 import { StatusIndicator } from './StatusIndicator';
 import { DemoPanel } from './DemoPanel';
+import { LatencyCard } from './LatencyCard';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
 import { useTradingOperations } from '@/hooks/useTradingOperations';
 import { useBotControls } from '@/hooks/useBotControls';
 
-const TAB_LIST = 'grid w-full grid-cols-2 h-auto p-1 rounded-xl bg-white/5 border border-white/10';
-const TAB_TRIGGER =
-  'rounded-lg py-2.5 text-slate-400 data-[state=active]:text-white data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-600 data-[state=active]:to-indigo-600 data-[state=active]:shadow-lg';
+const TAB_LIST = 'grid w-full grid-cols-2 h-auto p-1 rounded-lg bg-transparent border border-white/10';
+const TAB_TRIGGER = 'rounded-md py-2 text-slate-400 data-[state=active]:text-white data-[state=active]:bg-white/10';
 
 export const TradingDashboard: React.FC = () => {
   const {
@@ -61,16 +60,9 @@ export const TradingDashboard: React.FC = () => {
   return (
     <div className='modern p-4'>
       <header className='app-header'>
-        <div className='max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4'>
-          <div className='flex items-center gap-3'>
-            <div className='logo-mark'>
-              <Zap className='w-5 h-5' />
-            </div>
-            <div>
-              <h1 className='text-lg font-bold leading-tight'>Pumpfun Copy Trading Bot</h1>
-              <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
-            </div>
-          </div>
+        <div className='max-w-7xl mx-auto'>
+          <h1 className='text-lg font-semibold leading-tight'>Pumpfun Copy Trading Bot</h1>
+          <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
         </div>
       </header>
 
@@ -81,7 +73,8 @@ export const TradingDashboard: React.FC = () => {
             <TabsTrigger value='real' className={TAB_TRIGGER}>Real bot (private key required)</TabsTrigger>
           </TabsList>
 
-          <TabsContent value='demo' className='mt-6'>
+          <TabsContent value='demo' className='mt-6 space-y-6'>
+            <LatencyCard />
             <DemoPanel />
           </TabsContent>
 
