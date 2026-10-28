@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Settings, X } from 'lucide-react';
+import { HelpCircle, Settings, X } from 'lucide-react';
 import '@/settings.css';
 import { useDemoServer, useDemoSettings } from '@/hooks/useDemo';
 import { settingsEqual, validateForm } from '@/lib/demoStore';
@@ -71,9 +71,15 @@ export const SettingsMenu: React.FC<Props> = ({ mode, realConfig, onRealConfigCh
                   {mode === 'paper' ? 'Paper trading (no money, no private key)' : 'Real trading (signs real transactions)'}
                 </div>
               </div>
-              <button className='icon-btn' onClick={() => setOpen(false)} title='Close (Esc)'>
-                <X className='w-4 h-4' />
-              </button>
+              <div className='flex items-center gap-2'>
+                <a className='btn btn-ghost' href='/help' target='_blank' rel='noopener noreferrer' title='Open the help page in a new tab'>
+                  <HelpCircle className='w-4 h-4' />
+                  Help
+                </a>
+                <button className='icon-btn' onClick={() => setOpen(false)} title='Close (Esc)'>
+                  <X className='w-4 h-4' />
+                </button>
+              </div>
             </div>
             {mode === 'paper' ? (
               <PaperSettings server={server} section={section} onSection={(s: SectionKey | null) => setSection(s)} />
