@@ -90,6 +90,44 @@ export class RobustDemoEngine extends DemoEngine {
     this.lastCurve = new Map();
     this.rejected = 0;
     this.lastMismatch = null;
+    this.slotSeen = new Map();
+    this.sigSlot = new Map();
+  }
+
+  _connect() {
+    super._connect();
+    const ws = this.ws;
+    ws.on('open', () => this._send({ jsonrpc: '2.0', id: this.nextReq++, method: 'slotSubscribe' }));
+  }
+
+  _onMessage(raw) {
+    const text = raw.toString();
+    if (text.includes('slotNotification')) {
+      try {
+        const slot = JSON.parse(text).params?.result?.slot;
+        if (slot) {
+          this.slotSeen.set(slot, Date.now());
+          if (this.slotSeen.size > 400) this.slotSeen.delete(this.slotSeen.keys().next().value);
+        }
+      } catch {
+        // ignored message
+      }
+      return;
+    }
+    if (text.includes('logsNotification')) {
+      try {
+        const res = JSON.parse(text).params?.result;
+        const sig = res?.value?.signature;
+        const slot = res?.context?.slot;
+        if (sig && slot) {
+          this.sigSlot.set(sig, slot);
+          if (this.sigSlot.size > 2000) this.sigSlot.delete(this.sigSlot.keys().next().value);
+        }
+      } catch {
+        // ignored message
+      }
+    }
+    super._onMessage(raw);
   }
 
   async _getTx(signature) {
@@ -146,12 +184,19 @@ export class RobustDemoEngine extends DemoEngine {
   }
 
   _handleTrade(wallet, trade, tx, detectedAt, signature) {
-    const chainLagMs = tx && tx.blockTime ? detectedAt - tx.blockTime * 1000 : null;
+    const slot = this.sigSlot.get(signature);
+    const seenAt = slot !== undefined ? this.slotSeen.get(slot) : undefined;
+    const slotLagMs = seenAt !== undefined ? detectedAt - seenAt : null;
+    const clockLagMs = tx && tx.blockTime ? detectedAt - tx.blockTime * 1000 : null;
+    const chainLagMs = slotLagMs ?? (clockLagMs != null && clockLagMs >= 0 ? clockLagMs : null);
+    const clockSkewMs = slotLagMs != null && clockLagMs != null ? clockLagMs - slotLagMs : null;
     const p = super._handleTrade(wallet, trade, tx, detectedAt, signature);
     const ev = this.events[0];
     if (ev && ev.signature === signature && ev.wallet === wallet.address) {
       ev.chainLagMs = chainLagMs;
-      this.lagSamples.push({ chainLagMs, fetchMs: ev.fetchMs });
+      ev.slotLagMs = slotLagMs;
+      ev.clockLagMs = clockLagMs;
+      this.lagSamples.push({ chainLagMs, fetchMs: ev.fetchMs, clockSkewMs });
       if (this.lagSamples.length > 500) this.lagSamples.shift();
     }
     return p;
@@ -160,6 +205,7 @@ export class RobustDemoEngine extends DemoEngine {
   _latencyStats() {
     const chain = this.lagSamples.map((x) => x.chainLagMs).filter((v) => v != null);
     const fetchMs = this.lagSamples.map((x) => x.fetchMs);
+    const skew = this.lagSamples.map((x) => x.clockSkewMs).filter((v) => v != null);
     return {
       samples: this.lagSamples.length,
       avgChainLagMs: avg(chain),
@@ -167,6 +213,7 @@ export class RobustDemoEngine extends DemoEngine {
       p90ChainLagMs: pct(chain, 0.9),
       avgFetchMs: avg(fetchMs),
       medianFetchMs: pct(fetchMs, 0.5),
+      medianClockSkewMs: pct(skew, 0.5),
     };
   }
 
