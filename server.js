@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PublicKey } from '@solana/web3.js';
-import { DemoEngine, PUMP_PROGRAM } from './demo/engine.js';
+import { PUMP_PROGRAM } from './demo/engine.js';
+import { RobustDemoEngine, createRpc } from './demo/robust.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
@@ -25,17 +26,8 @@ app.use(cors({ origin: LOCAL_ORIGIN }));
 const PUMP_PK = new PublicKey(PUMP_PROGRAM);
 const LOG_DIR = path.join(__dirname, 'demo', 'logs');
 
-const demo = new DemoEngine({
-  makeRpc: (apiKey) => async (method, params) => {
-    const res = await fetch(`https://mainnet.helius-rpc.com/?api-key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    });
-    const json = await res.json();
-    if (json.error) throw new Error(`${method}: ${json.error.message}`);
-    return json.result;
-  },
+const demo = new RobustDemoEngine({
+  makeRpc: (apiKey) => createRpc({ url: `https://mainnet.helius-rpc.com/?api-key=${apiKey}` }),
   makeWs: (apiKey) => new WebSocket(`wss://mainnet.helius-rpc.com/?api-key=${apiKey}`),
   curveAddress: (mint) =>
     PublicKey.findProgramAddressSync([Buffer.from('bonding-curve'), new PublicKey(mint).toBuffer()], PUMP_PK)[0].toBase58(),
