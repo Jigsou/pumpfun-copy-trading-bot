@@ -6,6 +6,7 @@ const NL = String.fromCharCode(10);
 
 export const RESTART_BACKEND = 42;
 export const RESTART_ALL = 43;
+export const CHANNELS = ['main', 'dev'];
 
 const lines = (text) => String(text).split(NL).map((s) => s.trim()).filter(Boolean);
 
@@ -33,19 +34,68 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
   const short = (sha) => String(sha).slice(0, 7);
   const explain = (e) => String(e?.stderr || e?.message || e).trim().slice(0, 500);
 
+  async function currentBranch() {
+    try {
+      return await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    } catch {
+      return null;
+    }
+  }
+
   async function version() {
     try {
       const head = await git(['rev-parse', '--short', 'HEAD']);
-      let branch = '';
-      try {
-        branch = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
-      } catch {
-        branch = '';
-      }
-      return { head, branch, supervised };
+      return { head, branch: await currentBranch(), supervised, channels: CHANNELS };
     } catch {
-      return { head: null, branch: null, supervised };
+      return { head: null, branch: null, supervised, channels: CHANNELS };
     }
+  }
+
+  async function otherChannels(current) {
+    const out = [];
+    for (const b of CHANNELS) {
+      if (b === current) continue;
+      try {
+        const n = Number(await git(['rev-list', '--count', 'HEAD..origin/' + b]));
+        if (n > 0) out.push({ branch: b, ahead: n });
+      } catch {
+        // branch not on GitHub
+      }
+    }
+    return out;
+  }
+
+  function hint(others) {
+    if (!others.length) return '';
+    return ' ' + others.map((o) => 'Branch ' + o.branch + ' has ' + o.ahead + ' newer commit(s): switch the channel to try them.').join(' ');
+  }
+
+  async function finish(before, after, lead, progress) {
+    const files = lines(await git(['diff', '--name-only', before, after]));
+    const plan = planFor(files);
+    const base = { ok: true, changed: true, from: short(before), to: short(after), head: short(after), branch: await currentBranch(), files: files.slice(0, 30) };
+
+    if (plan.depsChanged) {
+      if (!npmExecPath) {
+        return { ...base, restarting: false, manual: true, message: lead + '. Dependencies changed: stop the server, run npm install --ignore-scripts, then npm start.' };
+      }
+      progress('Installing dependencies...');
+      try {
+        await execFileAsync(nodePath, [npmExecPath, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd, timeout: 300000, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
+      } catch (e) {
+        return { ok: false, message: lead + ' but npm install failed: ' + explain(e) };
+      }
+    }
+    if (plan.startChanged) {
+      return { ...base, restarting: false, manual: true, message: lead + '. The launcher (start.js) changed: stop the server with Ctrl+C and run npm start again.' };
+    }
+    if (plan.restartBackend || plan.restartFrontend) {
+      if (!supervised) {
+        return { ...base, restarting: false, manual: true, message: lead + '. A restart is needed: stop the server with Ctrl+C and run npm start (it was not started through npm start).' };
+      }
+      return { ...base, restarting: true, exitCode: plan.restartFrontend ? RESTART_ALL : RESTART_BACKEND, message: lead + '. Restarting the local server...' };
+    }
+    return { ...base, restarting: false, message: lead + '. No restart needed, the page reloads by itself.' };
   }
 
   async function run({ confirmed = false } = {}, progress = () => {}) {
@@ -58,9 +108,10 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
         return { ok: false, message: 'Not a git repository, or git is not installed: ' + explain(e) };
       }
       const before = await git(['rev-parse', 'HEAD']);
+      const branch = await currentBranch();
       progress('Checking GitHub...');
       try {
-        await git(['fetch', '--quiet'], gitTimeoutMs);
+        await git(['fetch', '--quiet', '--prune'], gitTimeoutMs);
       } catch (e) {
         return { ok: false, message: 'git fetch failed: ' + explain(e) };
       }
@@ -70,14 +121,19 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
       } catch {
         return { ok: false, message: 'No upstream branch is configured for this checkout.' };
       }
-      if (upstream === before) return { ok: true, changed: false, head: short(before), message: 'Already up to date (' + short(before) + ').' };
-      let behind = 1;
-      try {
-        behind = Number(await git(['rev-list', '--count', 'HEAD..@{u}']));
-      } catch {
-        behind = 1;
+      let behind = upstream === before ? 0 : 1;
+      if (upstream !== before) {
+        try {
+          behind = Number(await git(['rev-list', '--count', 'HEAD..@{u}']));
+        } catch {
+          behind = 1;
+        }
       }
-      if (behind === 0) return { ok: true, changed: false, head: short(before), message: 'Nothing to pull: your copy is ahead of GitHub (' + short(before) + ').' };
+      if (behind === 0) {
+        const others = await otherChannels(branch);
+        const msg = upstream === before ? 'Already up to date on ' + branch + '.' : 'Nothing to pull: your copy is ahead of GitHub on ' + branch + '.';
+        return { ok: true, changed: false, head: short(before), branch, others, message: msg + hint(others) };
+      }
 
       const incoming = lines(await git(['diff', '--name-only', 'HEAD', '@{u}']));
       const expected = planFor(incoming);
@@ -85,6 +141,7 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
         return {
           ok: true,
           needsConfirm: true,
+          action: 'update',
           files: incoming.slice(0, 30),
           message: 'This update restarts the local server. The simulation resumes automatically, but the statistics start again from zero.',
         };
@@ -97,41 +154,69 @@ export function createUpdater({ cwd, isDemoRunning = () => false, supervised = f
         return { ok: false, message: 'git pull failed: ' + explain(e) + ' If you edited tracked files, check git status in the project folder.' };
       }
       const after = await git(['rev-parse', 'HEAD']);
-      const files = lines(await git(['diff', '--name-only', before, after]));
-      const plan = planFor(files);
-      const base = { ok: true, changed: true, from: short(before), to: short(after), head: short(after), files: files.slice(0, 30) };
-
-      if (plan.depsChanged) {
-        if (!npmExecPath) {
-          return { ...base, restarting: false, manual: true, message: 'Updated to ' + short(after) + '. Dependencies changed: stop the server, run npm install --ignore-scripts, then npm start.' };
-        }
-        progress('Installing dependencies...');
-        try {
-          await execFileAsync(nodePath, [npmExecPath, 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd, timeout: 300000, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
-        } catch (e) {
-          return { ok: false, message: 'Pulled ' + short(after) + ' but npm install failed: ' + explain(e) };
-        }
-      }
-
-      if (plan.startChanged) {
-        return { ...base, restarting: false, manual: true, message: 'Updated to ' + short(after) + '. The launcher (start.js) changed: stop the server with Ctrl+C and run npm start again.' };
-      }
-      if (plan.restartBackend || plan.restartFrontend) {
-        if (!supervised) {
-          return { ...base, restarting: false, manual: true, message: 'Updated to ' + short(after) + '. A restart is needed: stop the server with Ctrl+C and run npm start (it was not started through npm start).' };
-        }
-        return {
-          ...base,
-          restarting: true,
-          exitCode: plan.restartFrontend ? RESTART_ALL : RESTART_BACKEND,
-          message: 'Updated to ' + short(after) + '. Restarting the local server...',
-        };
-      }
-      return { ...base, restarting: false, message: 'Updated to ' + short(after) + '. No restart needed, the page reloads by itself.' };
+      return await finish(before, after, 'Updated to ' + short(after), progress);
     } finally {
       busy = false;
     }
   }
 
-  return { run, version };
+  async function switchChannel(branch, { confirmed = false } = {}, progress = () => {}) {
+    if (!CHANNELS.includes(branch)) return { ok: false, message: 'Unknown channel: ' + branch };
+    if (busy) return { ok: false, message: 'An update is already running.' };
+    busy = true;
+    try {
+      try {
+        await git(['rev-parse', '--is-inside-work-tree']);
+      } catch (e) {
+        return { ok: false, message: 'Not a git repository, or git is not installed: ' + explain(e) };
+      }
+      const before = await git(['rev-parse', 'HEAD']);
+      const current = await currentBranch();
+      if (current === branch) return { ok: true, changed: false, head: short(before), branch, message: 'Already on ' + branch + '.' };
+      progress('Checking GitHub...');
+      try {
+        await git(['fetch', '--quiet', '--prune'], gitTimeoutMs);
+      } catch (e) {
+        return { ok: false, message: 'git fetch failed: ' + explain(e) };
+      }
+      let target;
+      try {
+        target = await git(['rev-parse', 'origin/' + branch]);
+      } catch {
+        return { ok: false, message: 'Branch ' + branch + ' does not exist on GitHub.' };
+      }
+      const dirty = await git(['status', '--porcelain', '--untracked-files=no']);
+      if (dirty) return { ok: false, message: 'You have local changes to tracked files, so switching could lose them. Check git status in the project folder.' };
+      const incoming = lines(await git(['diff', '--name-only', 'HEAD', target]));
+      const expected = planFor(incoming);
+      if (expected.restartBackend && supervised && isDemoRunning() && !confirmed) {
+        return {
+          ok: true,
+          needsConfirm: true,
+          action: 'switch',
+          branch,
+          files: incoming.slice(0, 30),
+          message: 'Switching to ' + branch + ' restarts the local server. The simulation resumes automatically, but the statistics start again from zero.',
+        };
+      }
+      progress('Switching to ' + branch + '...');
+      try {
+        await git(['checkout', branch], 60000);
+      } catch (e) {
+        return { ok: false, message: 'git checkout failed: ' + explain(e) };
+      }
+      try {
+        await git(['pull', '--ff-only', '--quiet'], 120000);
+      } catch (e) {
+        return { ok: false, message: 'Switched to ' + branch + ' but git pull failed: ' + explain(e) };
+      }
+      const after = await git(['rev-parse', 'HEAD']);
+      if (after === before) return { ok: true, changed: false, head: short(after), branch, message: 'Now on ' + branch + ' (same code).' };
+      return await finish(before, after, 'Switched to ' + branch + ' (' + short(after) + ')', progress);
+    } finally {
+      busy = false;
+    }
+  }
+
+  return { run, switchChannel, version };
 }

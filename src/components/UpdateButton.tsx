@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react';
 
 const WS_URL = 'ws://127.0.0.1:3001';
 const RESUME_KEY = 'pumpResumeAfterUpdate';
+const LABELS: Record<string, string> = { main: 'Stable (main)', dev: 'Test (dev)' };
 
 type Phase = 'idle' | 'working' | 'restarting' | 'done' | 'error';
 
@@ -44,9 +45,12 @@ export const UpdateButton: React.FC = () => {
   const [phase, setPhase] = useState<Phase>('idle');
   const [message, setMessage] = useState<string>('');
   const [head, setHead] = useState<string | null>(null);
+  const [branch, setBranch] = useState<string | null>(null);
+  const [channels, setChannels] = useState<string[]>(['main', 'dev']);
   const wsRef = useRef<WebSocket | null>(null);
   const runningRef = useRef(false);
   const resumedRef = useRef(false);
+  const pendingRef = useRef<Record<string, unknown>>({ type: 'app_update' });
 
   useEffect(() => {
     let closed = false;
@@ -63,9 +67,11 @@ export const UpdateButton: React.FC = () => {
           const msg = JSON.parse(e.data);
           if (msg.type === 'app_version') {
             setHead(msg.head ?? null);
+            setBranch(msg.branch ?? null);
+            if (Array.isArray(msg.channels) && msg.channels.length) setChannels(msg.channels);
             if (sessionStorage.getItem(RESUME_KEY)) {
               setPhase('done');
-              setMessage('Server back online on ' + (msg.head ?? 'new version') + '.');
+              setMessage('Server back online on ' + (msg.branch ?? '?') + ' ' + (msg.head ?? '') + '.');
             }
           } else if (msg.type === 'demo_state' && msg.state) {
             runningRef.current = !!msg.state.running;
@@ -93,6 +99,8 @@ export const UpdateButton: React.FC = () => {
           } else if (msg.type === 'app_update_progress') {
             setMessage(String(msg.message));
           } else if (msg.type === 'app_update_result') {
+            if (msg.branch) setBranch(msg.branch);
+            if (msg.head) setHead(msg.head);
             if (!msg.ok) {
               setPhase('error');
               setMessage(String(msg.message));
@@ -101,20 +109,18 @@ export const UpdateButton: React.FC = () => {
               const yes = window.confirm(String(msg.message) + (files ? ' Files: ' + files : '') + ' Continue?');
               if (yes) {
                 setPhase('working');
-                setMessage('Updating...');
-                ws.send(JSON.stringify({ type: 'app_update', confirmed: true }));
+                setMessage('Working...');
+                ws.send(JSON.stringify({ ...pendingRef.current, confirmed: true }));
               } else {
                 setPhase('idle');
-                setMessage('Update cancelled.');
+                setMessage('Cancelled.');
               }
             } else if (msg.restarting) {
               resumedRef.current = false;
               sessionStorage.setItem(RESUME_KEY, JSON.stringify({ wasRunning: runningRef.current, at: Date.now() }));
-              setHead(msg.head ?? null);
               setPhase('restarting');
               setMessage(String(msg.message));
             } else {
-              setHead(msg.head ?? null);
               setPhase(msg.manual ? 'error' : 'done');
               setMessage(String(msg.message));
             }
@@ -138,7 +144,7 @@ export const UpdateButton: React.FC = () => {
 
   const busy = phase === 'working' || phase === 'restarting';
 
-  const click = () => {
+  const send = (payload: Record<string, unknown>) => {
     const ws = wsRef.current;
     if (busy) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -146,20 +152,48 @@ export const UpdateButton: React.FC = () => {
       setMessage('Local server unreachable.');
       return;
     }
+    pendingRef.current = payload;
     setPhase('working');
     setMessage('Checking GitHub...');
-    ws.send(JSON.stringify({ type: 'app_update', confirmed: false }));
+    ws.send(JSON.stringify({ ...payload, confirmed: false }));
+  };
+
+  const changeChannel = (value: string) => {
+    if (!value || value === branch) return;
+    const label = LABELS[value] ?? value;
+    if (!window.confirm('Switch to the ' + label + ' channel? The code changes and the server may restart.')) return;
+    send({ type: 'app_switch', branch: value });
   };
 
   const tone = phase === 'error' ? 'text-rose-400' : phase === 'done' ? 'text-emerald-400' : 'text-slate-400';
+  const options = branch && !channels.includes(branch) ? [...channels, branch] : channels;
 
   return (
     <div className='flex items-center gap-3'>
       {message && <span className={`text-xs max-w-[420px] ${tone}`}>{message}</span>}
-      {head && <span className='text-xs text-slate-500' title='Installed version (git commit)'>{head}</span>}
-      <button className='btn btn-ghost' onClick={click} disabled={busy} title='Run git pull and restart the local server if needed'>
+      <select
+        className='input'
+        style={{ width: 'auto', padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+        value={branch ?? ''}
+        disabled={busy || !branch}
+        onChange={(e) => changeChannel(e.target.value)}
+        title='Code channel: Stable follows main, Test follows dev'
+      >
+        {!branch && <option value=''>?</option>}
+        {options.map((b) => (
+          <option key={b} value={b}>
+            {LABELS[b] ?? b}
+          </option>
+        ))}
+      </select>
+      {head && (
+        <span className='text-xs text-slate-500' title='Installed version (git commit)'>
+          {head}
+        </span>
+      )}
+      <button className='btn btn-ghost' onClick={() => send({ type: 'app_update' })} disabled={busy} title='Run git pull on the current channel and restart the local server if needed'>
         <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
-        {phase === 'restarting' ? 'Restarting...' : phase === 'working' ? 'Updating...' : 'Update'}
+        {phase === 'restarting' ? 'Restarting...' : phase === 'working' ? 'Working...' : 'Update'}
       </button>
     </div>
   );
