@@ -1,148 +1,24 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Activity,
-  ExternalLink,
-  Play,
-  Plus,
-  RotateCcw,
-  ShieldCheck,
-  SlidersHorizontal,
-  Square,
-  Target,
-  Trash2,
-  Wallet,
-} from 'lucide-react';
-
-const WS_URL = 'ws://127.0.0.1:3001';
-const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-
-interface WalletEntry {
-  address: string;
-  label: string;
-}
-interface WalletState extends WalletEntry {
-  buys: number;
-  sells: number;
-  lastSeen: number | null;
-  subscribed: boolean;
-}
-interface PositionRow {
-  key: string;
-  wallet: string;
-  label: string;
-  mint: string;
-  delayMs: number;
-  openedAt: number;
-  entryPrice: number;
-  targetPrice: number;
-  slipVsTargetPct: number;
-  pipelineMs: number;
-}
-interface TradeRow {
-  time: number;
-  wallet: string;
-  label: string;
-  mint: string;
-  delayMs: number;
-  slipVsTargetPct: number;
-  heldSec: number;
-  reason: string;
-  pnlSol: number | null;
-  pnlPct: number | null;
-}
-interface EventRow {
-  time: number;
-  wallet: string;
-  label: string;
-  side: 'buy' | 'sell';
-  mint: string;
-  sol: number;
-  venue: string;
-  signature: string;
-  fetchMs: number;
-}
-interface StatRow {
-  delayMs: number;
-  n: number;
-  unpriced: number;
-  wins: number;
-  winRate: number | null;
-  totalPnlSol: number;
-  avgPnlPct: number | null;
-  medianSlipPct: number | null;
-}
-interface Latency {
-  samples: number;
-  avgChainLagMs: number | null;
-  medianChainLagMs: number | null;
-  p90ChainLagMs: number | null;
-  avgFetchMs: number | null;
-  medianFetchMs: number | null;
-}
-interface Coverage {
-  walletTrades: number;
-  onCurve: number;
-  onAmm: number;
-  skipped: number;
-  unpriced: number;
-  rejected: number;
-  lastMismatch: Record<string, unknown> | null;
-}
-interface DemoState {
-  running: boolean;
-  connected: boolean;
-  wallets: WalletState[];
-  positions: PositionRow[];
-  trades: TradeRow[];
-  events: EventRow[];
-  stats: StatRow[];
-  skipped: number;
-  latency?: Latency;
-  coverage?: Coverage;
-  lastError: { message: string; time: number } | null;
-}
+import React, { useState } from 'react';
+import { Activity, ExternalLink, Play, RotateCcw, Settings, ShieldCheck, Square, Wallet } from 'lucide-react';
+import { useDemoServer, useDemoSettings } from '@/hooks/useDemo';
+import { settingsEqual, validateForm } from '@/lib/demoStore';
+import { openSettings } from '@/lib/uiEvents';
+import { fmtMs, fmtPct, fmtSol, fmtTime, short, tone, translateText } from '@/lib/demoShared';
+import { PremiumAnalysis } from './PremiumAnalysis';
 
 type TabKey = 'feed' | 'open' | 'closed';
 
-const OLD_DEFAULT_LABEL = 'Cupsey ? (a verifier sur Solscan)';
-const DEFAULT_LABEL = 'Cupsey ? (verify on Solscan)';
-const DEFAULT_WALLETS: WalletEntry[] = [{ address: '6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP', label: DEFAULT_LABEL }];
-const DEFAULT_FORM = { buySol: '0.1', delays: '1000,2000,3000', feePct: '1', costPerTxSol: '0.001', timeoutMin: '30' };
-
-const FR_EN: [string, string][] = [
-  ['vente de la cible', 'Target sold'],
-  ['delai depasse', 'Timeout'],
-  ['non evaluable', 'unpriced'],
-  ['Adresse Solana invalide (32 a 44 caracteres base58).', 'Invalid Solana address (32 to 44 base58 characters).'],
-  ['Adresse invalide', 'Invalid address'],
-  ['Cle Helius manquante.', 'Missing Helius key.'],
-  ['Ajoute au moins un wallet a suivre.', 'Add at least one wallet to follow.'],
-  ['Cle Helius refusee ou RPC injoignable', 'Helius key rejected or RPC unreachable'],
-  ['Commande inconnue', 'Unknown command'],
-  ['Abonnement refuse', 'Subscription refused'],
-  ['Ouverture simulee', 'Simulated open'],
-  ['Envoi WebSocket', 'WebSocket send'],
-  ['reponse invalide', 'invalid response'],
-  ['limite de requetes Helius (429) apres', 'Helius rate limit (429) after'],
-  ['essais', 'attempts'],
-];
-const translateText = (s: string) => FR_EN.reduce((acc, [fr, en]) => acc.split(fr).join(en), s);
-
-function loadJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-const short = (a: string) => `${a.slice(0, 4)}...${a.slice(-4)}`;
-const fmtPct = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`);
-const fmtSol = (v: number | null | undefined) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(4)}`);
-const fmtTime = (t: number) => new Date(t).toLocaleTimeString('en-GB');
-const fmtMs = (v: number | null | undefined) => (v == null ? '-' : `${Math.round(v)} ms`);
-const tone = (v: number | null | undefined) => (v == null ? 'text-slate-400' : v >= 0 ? 'text-emerald-400' : 'text-rose-400');
+const SKIP_LABELS: Record<string, string> = {
+  stale: 'Transaction already too old when fetched',
+  late: 'Price read too long after the planned delay',
+  txNotFound: 'Transaction not found',
+  curveUnavailable: 'Curve account unavailable',
+  curveQuoteNotSol: 'Coin paired with another coin (not SOL)',
+  ammPoolUnknown: 'PumpSwap pool not identified',
+  ammQuoteNotSol: 'PumpSwap pair is not SOL',
+  ammUnreadable: 'PumpSwap pool unreadable',
+  notATrade: 'Notifications ignored (not a Pump trade)',
+};
 
 interface PanelProps {
   title: string;
@@ -180,120 +56,40 @@ const Stat: React.FC<StatProps> = ({ label, value, sub, valueClass = '' }) => (
 );
 
 export const DemoPanel: React.FC = () => {
-  const [serverUp, setServerUp] = useState(false);
-  const [state, setState] = useState<DemoState | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { state, serverUp, error, setError, send } = useDemoServer();
+  const settings = useDemoSettings();
   const [tab, setTab] = useState<TabKey>('feed');
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('demoHeliusKey') ?? '');
-  const [wallets, setWallets] = useState<WalletEntry[]>(() =>
-    loadJson<WalletEntry[]>('demoWallets', DEFAULT_WALLETS).map((w) => (w.label === OLD_DEFAULT_LABEL ? { ...w, label: DEFAULT_LABEL } : w))
-  );
-  const [form, setForm] = useState(() => loadJson('demoForm', DEFAULT_FORM));
-  const [newAddr, setNewAddr] = useState('');
-  const [newLabel, setNewLabel] = useState('');
-  const wsRef = useRef<WebSocket | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem('demoHeliusKey', apiKey);
-  }, [apiKey]);
-  useEffect(() => {
-    localStorage.setItem('demoWallets', JSON.stringify(wallets));
-  }, [wallets]);
-  useEffect(() => {
-    localStorage.setItem('demoForm', JSON.stringify(form));
-  }, [form]);
-
-  useEffect(() => {
-    let closed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const connect = () => {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
-      ws.onopen = () => {
-        setServerUp(true);
-        ws.send(JSON.stringify({ type: 'demo_hello' }));
-      };
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
-          if (msg.type === 'demo_state') setState(msg.state as DemoState);
-          else if (msg.type === 'demo_error') setError(translateText(String(msg.message)));
-        } catch {
-          // ignored message
-        }
-      };
-      ws.onclose = () => {
-        setServerUp(false);
-        if (!closed) timer = setTimeout(connect, 2000);
-      };
-      ws.onerror = () => ws.close();
-    };
-    connect();
-    return () => {
-      closed = true;
-      if (timer) clearTimeout(timer);
-      wsRef.current?.close();
-    };
-  }, []);
-
-  const send = useCallback((obj: object): boolean => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(obj));
-      return true;
-    }
-    setError('Local server unreachable. Start the project with npm.cmd start.');
-    return false;
-  }, []);
 
   const running = !!state?.running;
-
-  const currentSettings = () => ({
-    buySol: Number(form.buySol),
-    delaysMs: form.delays
-      .split(',')
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isFinite(n)),
-    feePct: Number(form.feePct),
-    costPerTxSol: Number(form.costPerTxSol),
-    timeoutMin: Number(form.timeoutMin),
-  });
+  const v = validateForm(settings.form);
+  const hasKey = settings.apiKey.trim().length >= 8;
+  const hasWallets = settings.wallets.length > 0;
+  const applied = state?.settings;
+  const dirty = running && v.ok && !!v.settings && !!applied && !settingsEqual(v.settings, applied);
 
   const handleStart = () => {
     setError(null);
-    if (apiKey.trim().length < 8) {
-      setError('Paste your Helius API key (free at helius.dev).');
+    if (!hasKey) {
+      setError('Add your Helius API key in Options first (free at helius.dev).');
+      openSettings('connection');
       return;
     }
-    if (wallets.length === 0) {
-      setError('Add at least one wallet to follow.');
+    if (!hasWallets) {
+      setError('Add at least one wallet to follow in Options.');
+      openSettings('wallets');
       return;
     }
-    send({ type: 'demo_start', apiKey: apiKey.trim(), settings: currentSettings(), wallets });
-  };
-
-  const handleAddWallet = () => {
-    const address = newAddr.trim();
-    if (!BASE58.test(address)) {
-      setError('Invalid Solana address (32 to 44 characters).');
+    if (!v.ok || !v.settings) {
+      const tradeKeys = ['buySol', 'delays', 'feePct', 'costPerTxSol', 'timeoutMin'] as const;
+      setError('Some options are invalid. Fix the highlighted fields in Options.');
+      openSettings(tradeKeys.some((k) => v.errors[k]) ? 'trade' : 'rules');
       return;
     }
-    setError(null);
-    const label = newLabel.trim() || short(address);
-    setWallets((prev) => [...prev.filter((w) => w.address !== address), { address, label }]);
-    if (running) send({ type: 'demo_add_wallet', address, label });
-    setNewAddr('');
-    setNewLabel('');
+    send({ type: 'demo_start', apiKey: settings.apiKey.trim(), settings: v.settings, wallets: settings.wallets });
   };
 
-  const handleRemoveWallet = (address: string) => {
-    setWallets((prev) => prev.filter((w) => w.address !== address));
-    if (running) send({ type: 'demo_remove_wallet', address });
-  };
-
-  const handleOnlyThis = (w: WalletEntry) => {
-    setWallets([w]);
-    if (running) send({ type: 'demo_set_wallets', wallets: [w] });
+  const handleApply = () => {
+    if (v.ok && v.settings) send({ type: 'demo_update_settings', settings: v.settings });
   };
 
   const walletState = (address: string) => state?.wallets.find((w) => w.address === address);
@@ -306,6 +102,8 @@ export const DemoPanel: React.FC = () => {
   const lat = state?.latency;
   const cov = state?.coverage;
   const clockWarning = !!lat && lat.medianChainLagMs != null && lat.medianChainLagMs < 0;
+  const shown = applied ?? v.settings;
+  const skipRows = Object.entries(state?.skipReasons ?? {}).filter(([, n]) => n > 0);
 
   let verdict = 'Start the simulator and let it run.';
   let verdictClass = 'info';
@@ -323,13 +121,6 @@ export const DemoPanel: React.FC = () => {
     }
   }
 
-  const inputField = (id: string, label: string, value: string, onChange: (v: string) => void, full = false) => (
-    <div className={`field ${full ? 'col-span-2' : ''}`}>
-      <label htmlFor={id}>{label}</label>
-      <input id={id} className='input' value={value} onChange={(e) => onChange(e.target.value)} />
-    </div>
-  );
-
   const tabButton = (key: TabKey, label: string) => (
     <button
       key={key}
@@ -338,6 +129,18 @@ export const DemoPanel: React.FC = () => {
     >
       {label}
     </button>
+  );
+
+  const step = (done: boolean, text: string, action?: () => void, actionLabel?: string) => (
+    <li className='flex items-center gap-3 text-sm'>
+      <span className={`chip ${done ? 'good' : 'warn'}`}>{done ? 'Done' : 'To do'}</span>
+      <span className={done ? 'text-slate-400' : ''}>{text}</span>
+      {!done && action && (
+        <button className='btn btn-ghost ml-auto' onClick={action}>
+          {actionLabel}
+        </button>
+      )}
+    </li>
   );
 
   return (
@@ -350,7 +153,7 @@ export const DemoPanel: React.FC = () => {
               title='The simulator reads the blockchain (free Helius) and computes what you would have paid, including fees, slippage and a delay of your choice.'
             >
               <ShieldCheck className='w-3 h-3' />
-              Demo: no key, no transaction
+              Paper: no key, no transaction
             </span>
             <span className='pill'>
               <span className={`dot ${serverUp ? 'on' : 'off'}`} />
@@ -377,10 +180,6 @@ export const DemoPanel: React.FC = () => {
                 Stop
               </button>
             )}
-            <button className='btn btn-ghost' disabled={!running} onClick={() => send({ type: 'demo_update_settings', settings: currentSettings() })}>
-              <SlidersHorizontal className='w-4 h-4' />
-              Apply settings
-            </button>
             <button className='btn btn-ghost' onClick={() => send({ type: 'demo_reset' })}>
               <RotateCcw className='w-4 h-4' />
               Reset stats
@@ -400,6 +199,29 @@ export const DemoPanel: React.FC = () => {
           Your PC clock is behind the blockchain clock, so the detection lag is understated. Sync it: open PowerShell as administrator and run
           w32tm /resync
         </div>
+      )}
+      {dirty && (
+        <div className='alert info flex flex-wrap items-center justify-between gap-3'>
+          <span>Your options changed but are not applied to the running simulation yet.</span>
+          <span className='flex gap-2'>
+            <button className='btn btn-ghost' onClick={() => openSettings()}>
+              Review
+            </button>
+            <button className='btn btn-primary' onClick={handleApply}>
+              Apply now
+            </button>
+          </span>
+        </div>
+      )}
+
+      {!running && (!hasKey || !hasWallets) && (
+        <Panel title='Get started' icon={<Settings className='w-4 h-4 text-slate-400' />}>
+          <ul className='space-y-3'>
+            {step(hasKey, 'Add your free Helius API key', () => openSettings('connection'), 'Open options')}
+            {step(hasWallets, 'Add the wallet you want to follow', () => openSettings('wallets'), 'Open options')}
+            {step(false, 'Press Start simulation, then let it run for hours')}
+          </ul>
+        </Panel>
       )}
 
       <div className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3'>
@@ -423,7 +245,7 @@ export const DemoPanel: React.FC = () => {
       <div className={`alert ${verdictClass}`}>{verdict}</div>
 
       <div className='grid grid-cols-1 lg:grid-cols-12 gap-5'>
-        <div className='lg:col-span-7 space-y-5'>
+        <div className='lg:col-span-8 space-y-5'>
           <Panel title='Results by execution delay' icon={<Activity className='w-4 h-4 text-slate-400' />}>
             <div className='panel-scroll'>
               <table className='data-table'>
@@ -462,10 +284,11 @@ export const DemoPanel: React.FC = () => {
               {stats.length === 0 && <div className='empty'>No data yet.</div>}
             </div>
             <p className='text-xs text-slate-400 mt-3'>
-              Skipped: {state?.skipped ?? 0} (open the Log at the bottom of the page for the reasons). You need at least 50 trades per delay
-              before drawing any conclusion.
+              You need at least 50 closed trades per delay, and several different tokens, before drawing any conclusion.
             </p>
           </Panel>
+
+          <PremiumAnalysis premium={state?.premium} filtered={state?.filtered} settings={applied} />
 
           <section className='panel'>
             <header className='panel-head'>
@@ -577,10 +400,18 @@ export const DemoPanel: React.FC = () => {
           </section>
         </div>
 
-        <div className='lg:col-span-5 space-y-5'>
-          <Panel title='Followed wallets' icon={<Wallet className='w-4 h-4 text-slate-400' />}>
+        <div className='lg:col-span-4 space-y-5'>
+          <Panel
+            title='Followed wallets'
+            icon={<Wallet className='w-4 h-4 text-slate-400' />}
+            right={
+              <button className='btn btn-ghost' onClick={() => openSettings('wallets')}>
+                Manage
+              </button>
+            }
+          >
             <ul>
-              {wallets.map((w) => {
+              {settings.wallets.map((w) => {
                 const ws = walletState(w.address);
                 return (
                   <li key={w.address} className='wallet-row'>
@@ -597,63 +428,69 @@ export const DemoPanel: React.FC = () => {
                         <span className='chip neutral'>{ws?.lastSeen ? fmtTime(ws.lastSeen) : 'no trade yet'}</span>
                       </div>
                     </div>
-                    <div className='flex gap-1.5'>
-                      <button className='icon-btn' title='Follow only this one' onClick={() => handleOnlyThis(w)}>
-                        <Target className='w-4 h-4' />
-                      </button>
-                      <button className='icon-btn danger' title='Remove' onClick={() => handleRemoveWallet(w.address)}>
-                        <Trash2 className='w-4 h-4' />
-                      </button>
-                    </div>
                   </li>
                 );
               })}
             </ul>
-            {wallets.length === 0 && <div className='empty'>No wallets. Add an address below.</div>}
-            <div className='space-y-2 mt-3 pt-3 border-t border-white/10'>
-              <input className='input' value={newAddr} onChange={(e) => setNewAddr(e.target.value)} placeholder='Address of the wallet to follow' />
-              <div className='flex gap-2'>
-                <input className='input' value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder='Name (optional)' />
-                <button className='btn btn-primary' onClick={handleAddWallet}>
-                  <Plus className='w-4 h-4' />
-                  Add
-                </button>
-              </div>
-              <p className='text-xs text-slate-400'>Changes apply immediately while running. Always verify an address on Solscan: impersonators exist.</p>
-            </div>
+            {!hasWallets && <div className='empty'>No wallets. Open Manage to add one.</div>}
           </Panel>
 
-          <Panel title='Settings' icon={<SlidersHorizontal className='w-4 h-4 text-slate-400' />}>
-            <div className='grid grid-cols-2 gap-3'>
-              <div className='field col-span-2'>
-                <label htmlFor='heliusKey'>Helius API key (free, saved in this browser)</label>
-                <input
-                  id='heliusKey'
-                  type='password'
-                  className='input'
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder='Paste your Helius key here'
-                />
-              </div>
-              {inputField('buySol', 'Amount per trade (SOL)', form.buySol, (v) => setForm({ ...form, buySol: v }))}
-              {inputField('timeoutMin', 'Max hold (minutes)', form.timeoutMin, (v) => setForm({ ...form, timeoutMin: v }))}
-              {inputField('delays', 'Delays tested at the same time (ms)', form.delays, (v) => setForm({ ...form, delays: v }), true)}
-              {inputField('feePct', 'Pump.fun fee (%)', form.feePct, (v) => setForm({ ...form, feePct: v }))}
-              {inputField('cost', 'Cost per tx (SOL)', form.costPerTxSol, (v) => setForm({ ...form, costPerTxSol: v }))}
-            </div>
+          <Panel
+            title={applied ? 'Active settings' : 'Settings used at start'}
+            icon={<Settings className='w-4 h-4 text-slate-400' />}
+            right={
+              <button className='btn btn-ghost' onClick={() => openSettings('trade')}>
+                Change
+              </button>
+            }
+          >
+            {shown ? (
+              <dl className='text-sm grid grid-cols-2 gap-y-2'>
+                <dt className='text-slate-400'>Amount per trade</dt>
+                <dd className='text-right'>{shown.buySol} SOL</dd>
+                <dt className='text-slate-400'>Delays</dt>
+                <dd className='text-right'>{shown.delaysMs.join(' / ')} ms</dd>
+                <dt className='text-slate-400'>Pump.fun fee</dt>
+                <dd className='text-right'>{shown.feePct} %</dd>
+                <dt className='text-slate-400'>Max hold</dt>
+                <dd className='text-right'>{shown.timeoutMin} min</dd>
+                <dt className='text-slate-400'>Max premium</dt>
+                <dd className='text-right'>{(shown.maxPremiumPct ?? 0) > 0 ? `${shown.maxPremiumPct} %` : 'off'}</dd>
+                <dt className='text-slate-400'>Min wallet buy</dt>
+                <dd className='text-right'>{(shown.minWalletBuySol ?? 0) > 0 ? `${shown.minWalletBuySol} SOL` : 'off'}</dd>
+              </dl>
+            ) : (
+              <div className='empty'>Some options are invalid. Open Change to fix them.</div>
+            )}
           </Panel>
 
           {cov && (cov.walletTrades > 0 || cov.rejected > 0) && (
-            <Panel title='Why some trades have no profit figure'>
+            <Panel title='Coverage and skipped trades'>
               <ul className='text-sm text-slate-400 space-y-1'>
                 <li>
-                  {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve, {cov.onAmm} on PumpSwap (simulated from the pool
-                  reserves when the pool is identified).
+                  {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve, {cov.onAmm} on PumpSwap.
                 </li>
-                <li>{cov.unpriced} simulated trades closed without a price (the curve or the pool could not be read at that moment).</li>
+                {cov.distinctTokens != null && (
+                  <li>
+                    {cov.distinctTokens} distinct tokens traded by the wallets, {cov.usableTokens ?? 0} with at least one valid simulated entry.
+                  </li>
+                )}
+                <li>{cov.unpriced} simulated trades closed without a price.</li>
                 <li>{cov.rejected} simulated entries rejected because their price looked impossible compared with the wallet fill.</li>
               </ul>
+              {skipRows.length > 0 && (
+                <details className='mt-3'>
+                  <summary className='cursor-pointer text-slate-300 text-sm'>Why trades were skipped</summary>
+                  <ul className='text-xs text-slate-400 mt-2 space-y-1'>
+                    {skipRows.map(([key, n]) => (
+                      <li key={key} className='flex justify-between gap-3'>
+                        <span>{SKIP_LABELS[key] ?? key}</span>
+                        <span className='tabular-nums'>{n}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               {cov.lastMismatch && (
                 <details className='mt-3'>
                   <summary className='cursor-pointer text-slate-300 text-sm'>Diagnostic of the last rejected entry</summary>
@@ -669,25 +506,12 @@ export const DemoPanel: React.FC = () => {
               <ol>
                 <li>The bot watches the followed wallet through Helius. It never touches your money and never needs a private key.</li>
                 <li>
-                  When the wallet buys a Pump.fun token, the bot waits for each delay you configured, reads the real price at that moment and
-                  computes what your buy would have cost, fees included.
+                  When the wallet buys a token, the bot waits for each delay you configured, reads the real price at that moment and computes what your buy
+                  would have cost, fees included.
                 </li>
                 <li>When the wallet sells, the bot simulates your sell after the same delay. Otherwise the position closes after the max hold time.</li>
-                <li>
-                  A delay is the time between the bot seeing the trade and your transaction landing. Real delay behind the wallet is roughly the
-                  detection lag plus the delay of the row you look at.
-                </li>
-                <li>
-                  200 ms is a theoretical best case, 1000 ms an optimized setup, 3000 ms typical for a simple bot. Trust the row that matches your
-                  real setup.
-                </li>
-                <li>
-                  If PnL is positive at 200 ms but negative at 1000 and 3000 ms, the edge disappears with realistic latency. You need at least 50
-                  closed trades per row.
-                </li>
-                <li>
-                  Each wallet trade is replayed once per delay, so one trade gives several rows. Detection lag has about one second of precision.
-                </li>
+                <li>A delay is the time between the bot seeing the trade and your simulated entry. Longer delays usually mean a worse price.</li>
+                <li>Positive results at the slowest delay, over many different tokens and several days, are the only ones worth trusting.</li>
               </ol>
             </div>
           </details>

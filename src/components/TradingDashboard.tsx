@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import '@/modern.css';
 import { ConfigPanel } from './ConfigPanel';
 import { LiveFeed } from './LiveFeed';
@@ -7,18 +7,38 @@ import { LogsPanel } from './LogsPanel';
 import { BotControls } from './BotControls';
 import { StatusIndicator } from './StatusIndicator';
 import { DemoPanel } from './DemoPanel';
-import { StrategyFilters } from './StrategyFilters';
 import { LogReport } from './LogReport';
 import { UpdateButton } from './UpdateButton';
+import { SettingsMenu } from './SettingsMenu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
 import { useTradingOperations } from '@/hooks/useTradingOperations';
 import { useBotControls } from '@/hooks/useBotControls';
 
+type Mode = 'paper' | 'real';
+
 const TAB_LIST = 'grid w-full grid-cols-2 h-auto p-1 rounded-lg bg-transparent border border-white/10';
 const TAB_TRIGGER = 'rounded-md py-2 text-slate-400 data-[state=active]:text-white data-[state=active]:bg-white/10';
 
+const readMode = (): Mode => {
+  try {
+    return localStorage.getItem('uiMode') === 'real' ? 'real' : 'paper';
+  } catch {
+    return 'paper';
+  }
+};
+
 export const TradingDashboard: React.FC = () => {
+  const [mode, setModeState] = useState<Mode>(readMode);
+  const setMode = (m: Mode) => {
+    setModeState(m);
+    try {
+      localStorage.setItem('uiMode', m);
+    } catch {
+      // storage unavailable
+    }
+  };
+
   const {
     config,
     setConfig,
@@ -63,30 +83,41 @@ export const TradingDashboard: React.FC = () => {
     <div className='modern p-4'>
       <header className='app-header'>
         <div className='max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-3'>
-          <div>
-            <h1 className='text-lg font-semibold leading-tight'>Pumpfun Copy Trading Bot</h1>
-            <p className='text-xs text-slate-400'>Simulate first. Risk nothing until the numbers say it works.</p>
+          <div className='flex flex-wrap items-center gap-4'>
+            <div>
+              <h1 className='text-lg font-semibold leading-tight'>Pumpfun Copy Trading Bot</h1>
+              <p className='text-xs text-slate-400'>
+                {mode === 'paper' ? 'Paper trading: simulate first, risk nothing until the numbers say it works.' : 'Real trading: signs real transactions with your private key.'}
+              </p>
+            </div>
+            <div className='seg' role='group' aria-label='Mode'>
+              <button className={mode === 'paper' ? 'active' : ''} onClick={() => setMode('paper')} title='Simulation: no money, no private key'>
+                Paper
+              </button>
+              <button className={mode === 'real' ? 'active' : ''} onClick={() => setMode('real')} title='Real bot: private key required'>
+                Real
+              </button>
+            </div>
           </div>
-          <UpdateButton />
+          <div className='flex flex-wrap items-center gap-3'>
+            {mode === 'paper' && <SettingsMenu />}
+            <UpdateButton />
+          </div>
         </div>
       </header>
 
       <div className='max-w-[1400px] mx-auto space-y-5 pb-10'>
-        <Tabs defaultValue='demo' className='w-full'>
-          <TabsList className={TAB_LIST}>
-            <TabsTrigger value='demo' className={TAB_TRIGGER}>Demo mode (no money)</TabsTrigger>
-            <TabsTrigger value='real' className={TAB_TRIGGER}>Real bot (private key required)</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value='demo' className='mt-5 space-y-5'>
+        {mode === 'paper' && (
+          <div className='space-y-5'>
             <DemoPanel />
-            <StrategyFilters />
             <LogReport />
-          </TabsContent>
+          </div>
+        )}
 
-          <TabsContent value='real' className='mt-5 space-y-6'>
+        {mode === 'real' && (
+          <div className='space-y-6'>
             <div className='alert error'>
-              Warning: this bot signs real transactions with your private key. Only use a throwaway wallet, and only after validating demo mode.
+              Warning: this bot signs real transactions with your private key. Only use a throwaway wallet, and only after validating paper mode.
             </div>
 
             <div className='flex flex-wrap items-start gap-4'>
@@ -123,8 +154,8 @@ export const TradingDashboard: React.FC = () => {
                 <LogsPanel logs={logs} />
               </div>
             </div>
-          </TabsContent>
-        </Tabs>
+          </div>
+        )}
       </div>
     </div>
   );
