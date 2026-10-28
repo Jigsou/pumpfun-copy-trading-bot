@@ -7,6 +7,7 @@ import { LogsPanel } from './LogsPanel';
 import { BotControls } from './BotControls';
 import { StatusIndicator } from './StatusIndicator';
 import { DemoPanel } from './DemoPanel';
+import { StrategyFilters } from './StrategyFilters';
 import { LogReport } from './LogReport';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTradingState } from '@/hooks/useTradingState';
@@ -75,6 +76,7 @@ export const TradingDashboard: React.FC = () => {
 
           <TabsContent value='demo' className='mt-5 space-y-5'>
             <DemoPanel />
+            <StrategyFilters />
             <LogReport />
           </TabsContent>
 

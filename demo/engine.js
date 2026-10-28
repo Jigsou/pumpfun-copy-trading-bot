@@ -5,8 +5,17 @@ export const PUMPSWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 const WSOL = 'So11111111111111111111111111111111111111112';
 const TOKEN_DECIMALS = 6;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const MAX_TRADES = 5000;
 
-export const DEFAULTS = { buySol: 0.1, delaysMs: [1000, 2000, 3000], feePct: 1, costPerTxSol: 0.001, timeoutMin: 30 };
+export const DEFAULTS = {
+  buySol: 0.1,
+  delaysMs: [1000, 2000, 3000],
+  feePct: 1,
+  costPerTxSol: 0.001,
+  timeoutMin: 30,
+  maxPremiumPct: 0,
+  minWalletBuySol: 0,
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -27,6 +36,8 @@ export function sanitizeSettings(input = {}, base = DEFAULTS) {
   if (input.feePct !== undefined) out.feePct = num(input.feePct, 0, 20, base.feePct);
   if (input.costPerTxSol !== undefined) out.costPerTxSol = num(input.costPerTxSol, 0, 1, base.costPerTxSol);
   if (input.timeoutMin !== undefined) out.timeoutMin = num(input.timeoutMin, 1, 1440, base.timeoutMin);
+  if (input.maxPremiumPct !== undefined) out.maxPremiumPct = num(input.maxPremiumPct, 0, 1000, base.maxPremiumPct ?? 0);
+  if (input.minWalletBuySol !== undefined) out.minWalletBuySol = num(input.minWalletBuySol, 0, 1000, base.minWalletBuySol ?? 0);
   if (input.delaysMs !== undefined) {
     const raw = Array.isArray(input.delaysMs) ? input.delaysMs : String(input.delaysMs).split(',');
     const arr = raw.map((x) => Math.round(Number(x))).filter((x) => Number.isFinite(x) && x >= 0 && x <= 60000);
@@ -298,7 +309,7 @@ export class DemoEngine extends EventEmitter {
           { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: this.txVersion },
         ]);
       } catch (e) {
-        const m = String(e.message).match(/maxSupportedTransactionVersion["']?\s*:\s*(\d+)/);
+        const m = String(e.message).match(/maxSupportedTransactionVersion[^0-9]*([0-9]+)/);
         if (m && Number(m[1]) > this.txVersion) {
           this.txVersion = Number(m[1]);
           continue;
@@ -400,6 +411,14 @@ export class DemoEngine extends EventEmitter {
     }
   }
 
+  _skipCurve() {
+    this.skipped++;
+  }
+
+  _acceptEntry() {
+    return true;
+  }
+
   async _open(wallet, trade, delayMs, detectedAt) {
     if (trade.venue !== 'pump') {
       this.skipped++;
@@ -412,7 +431,7 @@ export class DemoEngine extends EventEmitter {
       await this._waitUntil(detectedAt + delayMs);
       const curve = await this._readCurve(trade.mint);
       if (!curve || curve.complete) {
-        this.skipped++;
+        this._skipCurve();
         return;
       }
       const s = this.settings;
@@ -437,6 +456,7 @@ export class DemoEngine extends EventEmitter {
         pipelineMs: Date.now() - detectedAt,
         closing: false,
       };
+      if (!this._acceptEntry(pos, trade, detectedAt, delayMs)) return;
       this.positions.set(key, pos);
       this._changed();
       const sellAt = this.sells.get(`${wallet.address}|${trade.mint}`);
@@ -489,7 +509,7 @@ export class DemoEngine extends EventEmitter {
     }
     this.positions.delete(pos.key);
     this.trades.unshift(rec);
-    if (this.trades.length > 300) this.trades.length = 300;
+    if (this.trades.length > MAX_TRADES) this.trades.length = MAX_TRADES;
     this.deps.appendLog?.('trades', rec);
     this._changed();
   }

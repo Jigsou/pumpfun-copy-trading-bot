@@ -5,6 +5,7 @@ export const IMPLAUSIBLE_SLIP_PCT = -50;
 export const LATE_TOLERANCE_MS = 800;
 export const AMM_FEE_PCT = 1.25;
 const WSOL = 'So11111111111111111111111111111111111111112';
+const MAX_TRADES = 5000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
@@ -119,6 +120,12 @@ export class RobustDemoEngine extends DemoEngine {
     this.lastAmm = null;
     this.errorLog = [];
     this.skipReasons = this._emptyReasons();
+    this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0 };
+    this.filtered = { tooSmall: 0, premiumTooHigh: 0 };
+    this.rawDumps = [];
+    this.dumpedMints = new Set();
+    this.poolFails = [];
+    this.poolOk = { fromInstruction: 0, fromBalances: 0 };
   }
 
   _emptyReasons() {
@@ -185,7 +192,7 @@ export class RobustDemoEngine extends DemoEngine {
           { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: this.txVersion },
         ]);
       } catch (e) {
-        const m = String(e.message).match(/maxSupportedTransactionVersion["']?\s*:\s*(\d+)/);
+        const m = String(e.message).match(/maxSupportedTransactionVersion[^0-9]*([0-9]+)/);
         if (m && Number(m[1]) > this.txVersion) {
           this.txVersion = Number(m[1]);
           continue;
@@ -219,11 +226,62 @@ export class RobustDemoEngine extends DemoEngine {
     return p;
   }
 
+  _skipCurve() {
+    super._skipCurve();
+    this.skipReasons.curveUnavailable++;
+  }
+
+  _trimPools() {
+    if (this.pools.size > 300) this.pools.delete(this.pools.keys().next().value);
+  }
+
+  _allInstructions(tx) {
+    const outer = tx?.transaction?.message?.instructions ?? [];
+    const inner = (tx?.meta?.innerInstructions ?? []).flatMap((i) => i.instructions ?? []);
+    return [...outer, ...inner];
+  }
+
+  _programIds(tx) {
+    return [...new Set(this._allInstructions(tx).map((ix) => ix.programId).filter(Boolean))].slice(0, 12);
+  }
+
+  _pumpswapInstructions(tx) {
+    const out = [];
+    for (const ix of this._allInstructions(tx)) {
+      if (ix.programId === PUMPSWAP_PROGRAM && Array.isArray(ix.accounts)) {
+        out.push(ix.accounts.map((a) => (typeof a === 'string' ? a : (a?.pubkey ?? String(a)))));
+      }
+    }
+    return out;
+  }
+
   _learnPool(tx, mint, traderAddress) {
+    const known = this.pools.has(mint);
+    const signature = tx?.transaction?.signatures?.[0] ?? null;
+    const fail = (reason, extra = {}) => {
+      if (known) return;
+      this.poolFails.unshift({ time: Date.now(), mint, signature, reason, ...extra });
+      if (this.poolFails.length > 8) this.poolFails.length = 8;
+    };
     try {
       const keys = tx.transaction.message.accountKeys.map((k) => (typeof k === 'string' ? k : k.pubkey));
+      const post = tx.meta?.postTokenBalances ?? [];
+      if (!post.length) return fail('no token balances in the transaction');
+      const byKey = new Map();
+      for (const b of post) byKey.set(keys[b.accountIndex], b);
+      const ixs = this._pumpswapInstructions(tx);
+      for (const acc of ixs) {
+        const base = byKey.get(acc[7]);
+        const quote = byKey.get(acc[8]);
+        if (base && quote && base.mint === mint && quote.mint === WSOL) {
+          this.pools.set(mint, { owner: base.owner, baseVault: acc[7], quoteVault: acc[8], decimals: base.uiTokenAmount.decimals });
+          this._trimPools();
+          this.poolOk.fromInstruction++;
+          return;
+        }
+      }
       const byOwner = new Map();
-      for (const b of tx.meta?.postTokenBalances ?? []) {
+      for (const b of post) {
         if (!b.owner || b.owner === traderAddress) continue;
         const o = byOwner.get(b.owner) ?? {};
         if (b.mint === mint) o.base = b;
@@ -231,7 +289,14 @@ export class RobustDemoEngine extends DemoEngine {
         byOwner.set(b.owner, o);
       }
       const found = [...byOwner.entries()].filter(([, o]) => o.base && o.quote);
-      if (!found.length) return;
+      if (!found.length) {
+        return fail('no pool account holds both the token and WSOL', {
+          pumpswapInstructions: ixs.length,
+          pumpswapAccounts: ixs[0] ? ixs[0].slice(0, 12) : null,
+          programs: this._programIds(tx),
+          balances: post.slice(0, 10).map((b) => ({ index: b.accountIndex, mint: b.mint, owner: b.owner, amount: b.uiTokenAmount?.amount })),
+        });
+      }
       found.sort((a, b) => Number(b[1].quote.uiTokenAmount.amount) - Number(a[1].quote.uiTokenAmount.amount));
       const [owner, o] = found[0];
       this.pools.set(mint, {
@@ -240,9 +305,10 @@ export class RobustDemoEngine extends DemoEngine {
         quoteVault: keys[o.quote.accountIndex],
         decimals: o.base.uiTokenAmount.decimals,
       });
-      if (this.pools.size > 300) this.pools.delete(this.pools.keys().next().value);
-    } catch {
-      // pool not identified
+      this._trimPools();
+      this.poolOk.fromBalances++;
+    } catch (e) {
+      fail('exception: ' + e.message);
     }
   }
 
@@ -266,8 +332,34 @@ export class RobustDemoEngine extends DemoEngine {
     return p;
   }
 
-  _rejectImplausible(pos) {
-    this.positions.delete(pos.key);
+  async _dumpCurveAccount(mint) {
+    if (this.dumpedMints.has(mint) || this.rawDumps.length >= 6) return;
+    this.dumpedMints.add(mint);
+    const addr = this.deps.curveAddress(mint);
+    const r = await this.rpc('getAccountInfo', [addr, { encoding: 'base64', commitment: 'confirmed' }]);
+    const v = r?.value;
+    if (!v) {
+      this.rawDumps.unshift({ mint, addr, missing: true, readAt: Date.now() });
+      return;
+    }
+    const d = Buffer.from(v.data[0], 'base64');
+    const u64 = [];
+    for (let o = 8; o + 8 <= Math.min(d.length, 56); o += 8) u64.push(d.readBigUInt64LE(o).toString());
+    this.rawDumps.unshift({
+      mint,
+      addr,
+      owner: v.owner,
+      lamports: v.lamports,
+      length: d.length,
+      flagAt48: d.length > 48 ? d[48] : null,
+      u64FromOffset8: u64,
+      hexHead: d.subarray(0, 96).toString('hex'),
+      readAt: Date.now(),
+    });
+    this._changed();
+  }
+
+  _recordRejection(pos) {
     this.rejected++;
     this.lastMismatch = {
       mint: pos.mint,
@@ -279,27 +371,41 @@ export class RobustDemoEngine extends DemoEngine {
       lastCurveRead: this.lastCurve.get(pos.mint) ?? null,
       lastPoolRead: this.lastAmm && this.lastAmm.mint === pos.mint ? this.lastAmm : null,
     };
+    if ((pos.venue ?? 'pump') === 'pump') {
+      this._dumpCurveAccount(pos.mint).catch((e) => this._setError('Curve dump: ' + e.message));
+    }
     this._changed();
   }
 
-  async _open(wallet, trade, delayMs, detectedAt) {
-    const key = `${wallet.address}|${trade.mint}|${delayMs}`;
-    if (trade.venue === 'pumpswap') return this._openAmm(wallet, trade, delayMs, detectedAt, key);
-    const before = this.skipped;
-    await super._open(wallet, trade, delayMs, detectedAt);
-    const pos = this.positions.get(key);
-    if (!pos) {
-      if (this.skipped > before) this.skipReasons.curveUnavailable++;
-      return;
-    }
+  _acceptEntry(pos, trade, detectedAt, delayMs) {
     if (pos.openedAt - (detectedAt + delayMs) > this.lateToleranceMs) {
-      this.positions.delete(key);
       this.skipped++;
       this.skipReasons.late++;
       this._changed();
+      return false;
+    }
+    if (pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT) {
+      this._recordRejection(pos);
+      return false;
+    }
+    const cap = this.settings.maxPremiumPct;
+    if (cap > 0 && pos.slipVsTargetPct > cap) {
+      this.filtered.premiumTooHigh++;
+      this._changed();
+      return false;
+    }
+    return true;
+  }
+
+  async _open(wallet, trade, delayMs, detectedAt) {
+    const min = this.settings.minWalletBuySol;
+    if (min > 0 && trade.sol < min) {
+      this.filtered.tooSmall++;
       return;
     }
-    if (pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT) this._rejectImplausible(pos);
+    const key = `${wallet.address}|${trade.mint}|${delayMs}`;
+    if (trade.venue === 'pumpswap') return this._openAmm(wallet, trade, delayMs, detectedAt, key);
+    return super._open(wallet, trade, delayMs, detectedAt);
   }
 
   async _openAmm(wallet, trade, delayMs, detectedAt, key) {
@@ -319,11 +425,6 @@ export class RobustDemoEngine extends DemoEngine {
         return;
       }
       const now = Date.now();
-      if (now - (detectedAt + delayMs) > this.lateToleranceMs) {
-        this.skipped++;
-        this.skipReasons.late++;
-        return;
-      }
       const s = this.settings;
       const solInNet = s.buySol * 1e9 * (1 - this.ammFeePct / 100);
       const k = st.base * st.quote;
@@ -348,12 +449,9 @@ export class RobustDemoEngine extends DemoEngine {
         pipelineMs: now - detectedAt,
         closing: false,
       };
+      if (!this._acceptEntry(pos, trade, detectedAt, delayMs)) return;
       this.positions.set(key, pos);
       this._changed();
-      if (pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT) {
-        this._rejectImplausible(pos);
-        return;
-      }
       const sellAt = this.sells.get(`${wallet.address}|${trade.mint}`);
       if (sellAt && sellAt >= detectedAt) {
         await this._waitUntil(sellAt + delayMs);
@@ -405,17 +503,13 @@ export class RobustDemoEngine extends DemoEngine {
     }
     this.positions.delete(pos.key);
     this.trades.unshift(rec);
-    if (this.trades.length > 300) this.trades.length = 300;
+    if (this.trades.length > MAX_TRADES) this.trades.length = MAX_TRADES;
     this.deps.appendLog?.('trades', rec);
     this._changed();
   }
 
   async _close(pos, reason) {
     if (pos.closing || !this.positions.has(pos.key)) return;
-    if (pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT) {
-      this._rejectImplausible(pos);
-      return;
-    }
     if (pos.venue === 'amm') return this._closeAmm(pos, reason);
     await super._close(pos, reason);
     const rec = this.trades[0];
@@ -431,6 +525,9 @@ export class RobustDemoEngine extends DemoEngine {
   }
 
   _handleTrade(wallet, trade, tx, detectedAt, signature) {
+    this.counts.walletTrades++;
+    if (trade.venue === 'pump') this.counts.onCurve++;
+    else this.counts.onAmm++;
     if (trade.venue === 'pumpswap' && tx) this._learnPool(tx, trade.mint, wallet.address);
     const slot = this.sigSlot.get(signature);
     const seenAt = slot !== undefined ? this.slotSeen.get(slot) : undefined;
@@ -465,12 +562,38 @@ export class RobustDemoEngine extends DemoEngine {
     };
   }
 
-  _coverage() {
-    const onAmm = this.events.filter((e) => e.venue !== 'pump').length;
+  _premiumBuckets() {
+    const delays = this.settings.delaysMs;
+    const slow = delays[delays.length - 1];
+    const rows = this.trades.filter((t) => t.delayMs === slow && t.pnlSol !== null && typeof t.slipVsTargetPct === 'number');
+    const defs = [
+      ['< 10 %', -Infinity, 10],
+      ['10 to 25 %', 10, 25],
+      ['25 to 50 %', 25, 50],
+      ['> 50 %', 50, Infinity],
+    ];
     return {
-      walletTrades: this.events.length,
-      onCurve: this.events.length - onAmm,
-      onAmm,
+      delayMs: slow ?? null,
+      buckets: defs.map(([label, lo, hi]) => {
+        const r = rows.filter((t) => t.slipVsTargetPct >= lo && t.slipVsTargetPct < hi);
+        const wins = r.filter((t) => t.pnlSol > 0).length;
+        return {
+          label,
+          n: r.length,
+          winRate: r.length ? wins / r.length : null,
+          avgPnlPct: avg(r.map((t) => t.pnlPct)),
+          medianPnlPct: pct(r.map((t) => t.pnlPct), 0.5),
+          totalPnlSol: r.reduce((a, t) => a + t.pnlSol, 0),
+        };
+      }),
+    };
+  }
+
+  _coverage() {
+    return {
+      walletTrades: this.counts.walletTrades,
+      onCurve: this.counts.onCurve,
+      onAmm: this.counts.onAmm,
       skipped: this.skipped,
       unpriced: this.trades.filter((t) => t.pnlSol === null).length,
       rejected: this.rejected,
@@ -483,6 +606,10 @@ export class RobustDemoEngine extends DemoEngine {
     s.latency = this._latencyStats();
     s.coverage = this._coverage();
     s.skipReasons = { ...this.skipReasons };
+    s.filtered = { ...this.filtered };
+    s.premium = this._premiumBuckets();
+    s.rawDumps = this.rawDumps.slice(0, 4);
+    s.poolDiag = { ok: { ...this.poolOk }, fails: this.poolFails.slice(0, 3) };
     s.rpc = typeof this.rpc?.stats === 'function' ? this.rpc.stats() : null;
     s.errorLog = this.errorLog.slice(0, 15);
     s.pools = this.pools.size;
@@ -497,5 +624,7 @@ export class RobustDemoEngine extends DemoEngine {
     this.rejected = 0;
     this.lastMismatch = null;
     this.skipReasons = this._emptyReasons();
+    this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0 };
+    this.filtered = { tooSmall: 0, premiumTooHigh: 0 };
   }
 }

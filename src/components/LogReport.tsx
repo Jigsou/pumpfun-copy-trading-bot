@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 
 const WS_URL = 'ws://127.0.0.1:3001';
+const NL = String.fromCharCode(10);
 
 type AnyState = Record<string, any>;
 
@@ -20,6 +21,7 @@ function buildReport(s: AnyState | null): string {
   L.push(
     `settings: buySol=${st.buySol} delays=${JSON.stringify(st.delaysMs)} curveFee=${st.feePct}% costPerTx=${st.costPerTxSol} maxHoldMin=${st.timeoutMin}`
   );
+  L.push(`rules: maxPremiumPct=${st.maxPremiumPct ?? 0} (0=off) minWalletBuySol=${st.minWalletBuySol ?? 0} (0=off)`);
   if (s.engine) L.push(`engine: ammFee=${s.engine.ammFeePct}% lateTolerance=${s.engine.lateToleranceMs}ms staleAfter=${s.engine.staleAfterS}s`);
   L.push('');
   L.push('--- wallets ---');
@@ -30,6 +32,11 @@ function buildReport(s: AnyState | null): string {
     L.push(
       `${r.delayMs} ms: closed=${r.n} unpriced=${r.unpriced} win=${r.winRate == null ? '-' : Math.round(r.winRate * 100) + '%'} pnl=${sol(r.totalPnlSol)} SOL avg=${pc(r.avgPnlPct)} paidVsTarget(median)=${pc(r.medianSlipPct)}`
     );
+  }
+  L.push('');
+  L.push(`--- pnl by entry premium (slowest delay ${s.premium?.delayMs ?? '-'} ms) ---`);
+  for (const b of s.premium?.buckets ?? []) {
+    L.push(`${b.label}: n=${b.n} win=${b.winRate == null ? '-' : Math.round(b.winRate * 100) + '%'} median=${pc(b.medianPnlPct)} avg=${pc(b.avgPnlPct)} total=${sol(b.totalPnlSol)} SOL`);
   }
   L.push('');
   const lat = s.latency ?? {};
@@ -47,14 +54,16 @@ function buildReport(s: AnyState | null): string {
   );
   L.push('');
   const sr = s.skipReasons ?? {};
+  const fl = s.filtered ?? {};
   L.push('--- skipped / ignored by reason ---');
   L.push(`total skipped counter: ${s.skipped ?? 0}`);
   L.push(
     `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
   );
+  L.push(`refused by your rules (per delay row): premiumTooHigh=${fl.premiumTooHigh ?? 0} walletBuyTooSmall=${fl.tooSmall ?? 0}`);
   const c = s.coverage ?? {};
   L.push(
-    `coverage: walletTrades=${c.walletTrades ?? 0} onCurve=${c.onCurve ?? 0} onPumpSwap=${c.onAmm ?? 0} unpricedExits=${c.unpriced ?? 0} rejectedEntries=${c.rejected ?? 0} poolsKnown=${s.pools ?? 0}`
+    `coverage (cumulative since reset): walletTrades=${c.walletTrades ?? 0} onCurve=${c.onCurve ?? 0} onPumpSwap=${c.onAmm ?? 0} unpricedExits=${c.unpriced ?? 0} rejectedEntries=${c.rejected ?? 0} poolsKnown=${s.pools ?? 0}`
   );
   L.push('');
   L.push('--- last errors ---');
@@ -72,7 +81,7 @@ function buildReport(s: AnyState | null): string {
   L.push('--- last closed simulated trades ---');
   for (const t of (s.trades ?? []).slice(0, 15)) {
     L.push(
-      `${clock(t.time)} ${t.label} delay=${t.delayMs}ms mint=${t.mint} vsTarget=${pc(t.slipVsTargetPct)} held=${t.heldSec}s exit="${t.reason}" pnl=${sol(t.pnlSol)} SOL (${pc(t.pnlPct)})`
+      `${clock(t.time)} ${t.label} delay=${t.delayMs}ms mint=${t.mint} vsTarget=${pc(t.slipVsTargetPct)} held=${t.heldSec}s exit='${t.reason}' pnl=${sol(t.pnlSol)} SOL (${pc(t.pnlPct)})`
     );
   }
   if (!(s.trades ?? []).length) L.push('none');
@@ -81,10 +90,17 @@ function buildReport(s: AnyState | null): string {
   for (const p of (s.positions ?? []).slice(0, 15)) L.push(`${p.label} delay=${p.delayMs}ms mint=${p.mint} vsTarget=${pc(p.slipVsTargetPct)} openedAt=${clock(p.openedAt)}`);
   if (!(s.positions ?? []).length) L.push('none');
   L.push('');
-  L.push('--- diagnostics ---');
-  L.push(`last rejected entry: ${c.lastMismatch ? JSON.stringify(c.lastMismatch) : 'none'}`);
+  L.push('--- diagnostics: last rejected entry ---');
+  L.push(c.lastMismatch ? JSON.stringify(c.lastMismatch) : 'none');
+  L.push('--- diagnostics: raw bonding-curve accounts of rejected tokens ---');
+  for (const d of s.rawDumps ?? []) L.push(JSON.stringify(d));
+  if (!(s.rawDumps ?? []).length) L.push('none');
+  L.push('--- diagnostics: PumpSwap pool identification ---');
+  L.push(`identified from instruction accounts=${s.poolDiag?.ok?.fromInstruction ?? 0} from token balances=${s.poolDiag?.ok?.fromBalances ?? 0}`);
+  for (const f of s.poolDiag?.fails ?? []) L.push(JSON.stringify(f));
+  if (!(s.poolDiag?.fails ?? []).length) L.push('no identification failure recorded');
   L.push(`last PumpSwap pool read: ${s.lastAmm ? JSON.stringify(s.lastAmm) : 'none'}`);
-  return L.join('\n');
+  return L.join(NL);
 }
 
 export const LogReport: React.FC = () => {
