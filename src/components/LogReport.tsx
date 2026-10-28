@@ -5,18 +5,21 @@ const WS_URL = 'ws://127.0.0.1:3001';
 const NL = String.fromCharCode(10);
 
 type AnyState = Record<string, any>;
+type Version = { head: string | null; branch: string | null } | null;
 
 const ms = (v: unknown) => (typeof v === 'number' ? `${Math.round(v)} ms` : '-');
 const sol = (v: unknown) => (typeof v === 'number' ? v.toFixed(4) : '-');
 const pc = (v: unknown) => (typeof v === 'number' ? `${v.toFixed(1)}%` : '-');
 const clock = (v: unknown) => (typeof v === 'number' ? new Date(v).toISOString().slice(11, 23) : '-');
+const hours = (since: unknown) => (typeof since === 'number' ? ((Date.now() - since) / 3600000).toFixed(1) : '-');
 
-function buildReport(s: AnyState | null): string {
+function buildReport(s: AnyState | null, ver: Version): string {
   if (!s) return 'No data yet: the local server has not answered. Start the project with npm.cmd start.';
   const L: string[] = [];
   const st = s.settings ?? {};
   L.push('=== PUMPFUN COPY BOT LOG ===');
   L.push(`generated: ${new Date().toISOString()}`);
+  L.push(`version: ${ver?.head ?? 'unknown'} (branch ${ver?.branch ?? 'unknown'})`);
   L.push(`running: ${s.running ? 'yes' : 'no'} | helius websocket: ${s.connected ? 'connected' : 'disconnected'}`);
   L.push(
     `settings: buySol=${st.buySol} delays=${JSON.stringify(st.delaysMs)} curveFee=${st.feePct}% costPerTx=${st.costPerTxSol} maxHoldMin=${st.timeoutMin}`
@@ -55,15 +58,18 @@ function buildReport(s: AnyState | null): string {
   L.push('');
   const sr = s.skipReasons ?? {};
   const fl = s.filtered ?? {};
+  const c = s.coverage ?? {};
+  L.push('--- sample size ---');
+  L.push(`since reset: ${hours(c.startedAt)} h | distinct tokens traded by wallets=${c.distinctTokens ?? 0} | tokens with at least one valid simulated entry=${c.usableTokens ?? 0}`);
+  L.push('');
   L.push('--- skipped / ignored by reason ---');
   L.push(`total skipped counter: ${s.skipped ?? 0}`);
   L.push(
-    `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
+    `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} txNotFound=${sr.txNotFound ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} curveQuoteNotSol=${sr.curveQuoteNotSol ?? 0} pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapQuoteNotSol=${sr.ammQuoteNotSol ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
   );
   L.push(`refused by your rules (per delay row): premiumTooHigh=${fl.premiumTooHigh ?? 0} walletBuyTooSmall=${fl.tooSmall ?? 0}`);
-  const c = s.coverage ?? {};
   L.push(
-    `coverage (cumulative since reset): walletTrades=${c.walletTrades ?? 0} onCurve=${c.onCurve ?? 0} onPumpSwap=${c.onAmm ?? 0} unpricedExits=${c.unpriced ?? 0} rejectedEntries=${c.rejected ?? 0} poolsKnown=${s.pools ?? 0}`
+    `coverage (cumulative since reset): walletTrades=${c.walletTrades ?? 0} onCurve=${c.onCurve ?? 0} onPumpSwap=${c.onAmm ?? 0} unpricedExits=${c.unpriced ?? 0} rejectedEntries=${c.rejected ?? 0} poolsKnown=${s.pools ?? 0} nonSolPairsSeen=${s.nonSolPools ?? 0}`
   );
   L.push('');
   L.push('--- last errors ---');
@@ -97,6 +103,8 @@ function buildReport(s: AnyState | null): string {
   if (!(s.rawDumps ?? []).length) L.push('none');
   L.push('--- diagnostics: PumpSwap pool identification ---');
   L.push(`identified from instruction accounts=${s.poolDiag?.ok?.fromInstruction ?? 0} from token balances=${s.poolDiag?.ok?.fromBalances ?? 0}`);
+  L.push(`pool account decoded and matching=${s.poolDiag?.layout?.verifiedReads ?? 0} mismatches=${s.poolDiag?.layout?.mismatches ?? 0}`);
+  for (const m of s.poolDiag?.layout?.last ?? []) L.push(JSON.stringify(m));
   for (const f of s.poolDiag?.fails ?? []) L.push(JSON.stringify(f));
   if (!(s.poolDiag?.fails ?? []).length) L.push('no identification failure recorded');
   L.push(`last PumpSwap pool read: ${s.lastAmm ? JSON.stringify(s.lastAmm) : 'none'}`);
@@ -105,6 +113,7 @@ function buildReport(s: AnyState | null): string {
 
 export const LogReport: React.FC = () => {
   const [state, setState] = useState<AnyState | null>(null);
+  const [version, setVersion] = useState<Version>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -113,11 +122,15 @@ export const LogReport: React.FC = () => {
     let ws: WebSocket | null = null;
     const connect = () => {
       ws = new WebSocket(WS_URL);
-      ws.onopen = () => ws?.send(JSON.stringify({ type: 'demo_hello' }));
+      ws.onopen = () => {
+        ws?.send(JSON.stringify({ type: 'demo_hello' }));
+        ws?.send(JSON.stringify({ type: 'app_version' }));
+      };
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'demo_state' && msg.state) setState(msg.state as AnyState);
+          else if (msg.type === 'app_version') setVersion({ head: msg.head ?? null, branch: msg.branch ?? null });
         } catch {
           // ignored message
         }
@@ -135,7 +148,7 @@ export const LogReport: React.FC = () => {
     };
   }, []);
 
-  const report = buildReport(state);
+  const report = buildReport(state, version);
 
   const copy = async () => {
     try {

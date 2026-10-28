@@ -1,10 +1,11 @@
 import { DemoEngine, PUMP_PROGRAM, PUMPSWAP_PROGRAM } from './engine.js';
+import { WSOL, decodeBondingCurve, decodePool } from './layouts.js';
 
 export const STALE_AFTER_S = 30;
 export const IMPLAUSIBLE_SLIP_PCT = -50;
+export const IMPLAUSIBLE_HIGH_PCT = 1000;
 export const LATE_TOLERANCE_MS = 800;
 export const AMM_FEE_PCT = 1.25;
-const WSOL = 'So11111111111111111111111111111111111111112';
 const MAX_TRADES = 5000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -117,6 +118,7 @@ export class RobustDemoEngine extends DemoEngine {
     this.slotSeen = new Map();
     this.sigSlot = new Map();
     this.pools = new Map();
+    this.nonSolPools = new Map();
     this.lastAmm = null;
     this.errorLog = [];
     this.skipReasons = this._emptyReasons();
@@ -126,10 +128,24 @@ export class RobustDemoEngine extends DemoEngine {
     this.dumpedMints = new Set();
     this.poolFails = [];
     this.poolOk = { fromInstruction: 0, fromBalances: 0 };
+    this.poolLayout = { verifiedReads: 0, mismatches: 0, last: [] };
+    this.mintsSeen = new Set();
+    this.mintsUsable = new Set();
+    this.startedAt = Date.now();
   }
 
   _emptyReasons() {
-    return { stale: 0, late: 0, curveUnavailable: 0, ammPoolUnknown: 0, ammUnreadable: 0, notATrade: 0 };
+    return {
+      stale: 0,
+      late: 0,
+      curveUnavailable: 0,
+      curveQuoteNotSol: 0,
+      ammPoolUnknown: 0,
+      ammQuoteNotSol: 0,
+      ammUnreadable: 0,
+      txNotFound: 0,
+      notATrade: 0,
+    };
   }
 
   _setError(msg) {
@@ -202,7 +218,12 @@ export class RobustDemoEngine extends DemoEngine {
       if (tx) break;
       await sleep(200);
     }
-    if (tx && tx.blockTime && Date.now() / 1000 - tx.blockTime > this.staleAfterS) {
+    if (!tx) {
+      this.skipReasons.txNotFound++;
+      this._changed();
+      return null;
+    }
+    if (tx.blockTime && Date.now() / 1000 - tx.blockTime > this.staleAfterS) {
       this.skipped++;
       this.skipReasons.stale++;
       this._changed();
@@ -211,13 +232,28 @@ export class RobustDemoEngine extends DemoEngine {
     return tx;
   }
 
+  async _fetchCurve(mint) {
+    const r = await this.rpc('getAccountInfo', [this.deps.curveAddress(mint), { encoding: 'base64', commitment: 'confirmed' }]);
+    const v = r?.value;
+    if (!v) return null;
+    return decodeBondingCurve(Buffer.from(v.data[0], 'base64'));
+  }
+
   _readCurve(mint) {
     const existing = this.inflight.get(mint);
     if (existing) return existing;
-    const p = super
-      ._readCurve(mint)
+    const p = this._fetchCurve(mint)
       .then((c) => {
-        if (c) this.lastCurve.set(mint, { vToken: c.vToken, vSol: c.vSol, complete: c.complete, readAt: Date.now() });
+        if (c) {
+          this.lastCurve.set(mint, {
+            vToken: c.vToken,
+            vSol: c.vSol,
+            complete: c.complete,
+            quoteIsSol: c.quoteIsSol,
+            quoteMint: c.quoteMint,
+            readAt: Date.now(),
+          });
+        }
         if (this.lastCurve.size > 200) this.lastCurve.delete(this.lastCurve.keys().next().value);
         return c;
       })
@@ -233,6 +269,12 @@ export class RobustDemoEngine extends DemoEngine {
 
   _trimPools() {
     if (this.pools.size > 300) this.pools.delete(this.pools.keys().next().value);
+  }
+
+  _markNonSol(mint, otherMint) {
+    this.nonSolPools.set(mint, otherMint);
+    if (this.nonSolPools.size > 300) this.nonSolPools.delete(this.nonSolPools.keys().next().value);
+    this.pools.delete(mint);
   }
 
   _allInstructions(tx) {
@@ -264,17 +306,30 @@ export class RobustDemoEngine extends DemoEngine {
       if (this.poolFails.length > 8) this.poolFails.length = 8;
     };
     try {
+      const ixs = this._pumpswapInstructions(tx);
+      for (const acc of ixs) {
+        if (acc.length > 4 && acc[4] !== WSOL && (acc[3] === mint || acc[4] === mint)) {
+          this._markNonSol(mint, acc[4] === mint ? acc[3] : acc[4]);
+          return;
+        }
+      }
+      if (this.nonSolPools.has(mint)) return;
       const keys = tx.transaction.message.accountKeys.map((k) => (typeof k === 'string' ? k : k.pubkey));
       const post = tx.meta?.postTokenBalances ?? [];
       if (!post.length) return fail('no token balances in the transaction');
       const byKey = new Map();
       for (const b of post) byKey.set(keys[b.accountIndex], b);
-      const ixs = this._pumpswapInstructions(tx);
       for (const acc of ixs) {
         const base = byKey.get(acc[7]);
         const quote = byKey.get(acc[8]);
         if (base && quote && base.mint === mint && quote.mint === WSOL) {
-          this.pools.set(mint, { owner: base.owner, baseVault: acc[7], quoteVault: acc[8], decimals: base.uiTokenAmount.decimals });
+          this.pools.set(mint, {
+            owner: base.owner,
+            poolAddress: acc[0],
+            baseVault: acc[7],
+            quoteVault: acc[8],
+            decimals: base.uiTokenAmount.decimals,
+          });
           this._trimPools();
           this.poolOk.fromInstruction++;
           return;
@@ -301,6 +356,7 @@ export class RobustDemoEngine extends DemoEngine {
       const [owner, o] = found[0];
       this.pools.set(mint, {
         owner,
+        poolAddress: owner,
         baseVault: keys[o.base.accountIndex],
         quoteVault: keys[o.quote.accountIndex],
         decimals: o.base.uiTokenAmount.decimals,
@@ -312,19 +368,63 @@ export class RobustDemoEngine extends DemoEngine {
     }
   }
 
+  _layoutMismatch(mint, reason, extra = {}) {
+    this.poolLayout.mismatches++;
+    if (this.poolLayout.last.length < 3) this.poolLayout.last.push({ time: Date.now(), mint, reason, ...extra });
+    return { virtualQuote: 0, ok: false };
+  }
+
+  _poolMeta(pool, mint, acct) {
+    const data = acct?.data;
+    if (!Array.isArray(data) || typeof data[0] !== 'string') return this._layoutMismatch(mint, 'pool account not returned as base64');
+    let d = null;
+    try {
+      d = decodePool(Buffer.from(data[0], 'base64'));
+    } catch {
+      d = null;
+    }
+    if (!d) return this._layoutMismatch(mint, 'pool account too short');
+    if (d.baseMint !== mint || d.baseVault !== pool.baseVault || d.quoteVault !== pool.quoteVault) {
+      return this._layoutMismatch(mint, 'decoded pool does not match the instruction accounts', {
+        decoded: { baseMint: d.baseMint, quoteMint: d.quoteMint, baseVault: d.baseVault, quoteVault: d.quoteVault },
+      });
+    }
+    if (d.quoteMint !== WSOL) {
+      this._markNonSol(mint, d.quoteMint);
+      return { virtualQuote: 0, ok: false, nonSol: true };
+    }
+    this.poolLayout.verifiedReads++;
+    return { virtualQuote: Number(d.virtualQuote), ok: true };
+  }
+
   _readPool(mint) {
     const existing = this.inflightPool.get(mint);
     if (existing) return existing;
     const pool = this.pools.get(mint);
     if (!pool) return Promise.resolve(null);
-    const p = this.rpc('getMultipleAccounts', [[pool.baseVault, pool.quoteVault], { encoding: 'jsonParsed', commitment: 'confirmed' }])
+    const p = this.rpc('getMultipleAccounts', [[pool.poolAddress, pool.baseVault, pool.quoteVault], { encoding: 'jsonParsed', commitment: 'confirmed' }])
       .then((r) => {
         const v = r?.value;
-        const b = v?.[0]?.data?.parsed?.info?.tokenAmount;
-        const q = v?.[1]?.data?.parsed?.info?.tokenAmount;
+        const b = v?.[1]?.data?.parsed?.info?.tokenAmount;
+        const q = v?.[2]?.data?.parsed?.info?.tokenAmount;
         if (!b || !q) return null;
-        const st = { base: Number(b.amount), quote: Number(q.amount), decimals: b.decimals ?? pool.decimals };
-        this.lastAmm = { mint, baseVault: pool.baseVault, quoteVault: pool.quoteVault, baseRaw: st.base, quoteLamports: st.quote, readAt: Date.now() };
+        const meta = this._poolMeta(pool, mint, v?.[0]);
+        if (meta.nonSol) return null;
+        const vaultQuote = Number(q.amount);
+        const effective = vaultQuote + meta.virtualQuote;
+        if (!(effective > 0)) return null;
+        const st = { base: Number(b.amount), quote: effective, decimals: b.decimals ?? pool.decimals };
+        this.lastAmm = {
+          mint,
+          baseVault: pool.baseVault,
+          quoteVault: pool.quoteVault,
+          baseRaw: st.base,
+          quoteVaultLamports: vaultQuote,
+          virtualQuote: meta.virtualQuote,
+          effectiveQuoteLamports: effective,
+          layoutVerified: meta.ok,
+          readAt: Date.now(),
+        };
         return st;
       })
       .finally(() => this.inflightPool.delete(mint));
@@ -343,25 +443,25 @@ export class RobustDemoEngine extends DemoEngine {
       return;
     }
     const d = Buffer.from(v.data[0], 'base64');
-    const u64 = [];
-    for (let o = 8; o + 8 <= Math.min(d.length, 56); o += 8) u64.push(d.readBigUInt64LE(o).toString());
+    const dec = decodeBondingCurve(d);
     this.rawDumps.unshift({
       mint,
       addr,
       owner: v.owner,
       lamports: v.lamports,
       length: d.length,
-      flagAt48: d.length > 48 ? d[48] : null,
-      u64FromOffset8: u64,
+      quoteMint: dec ? dec.quoteMint : null,
+      quoteIsSol: dec ? dec.quoteIsSol : null,
       hexHead: d.subarray(0, 96).toString('hex'),
       readAt: Date.now(),
     });
     this._changed();
   }
 
-  _recordRejection(pos) {
+  _recordRejection(pos, reason) {
     this.rejected++;
     this.lastMismatch = {
+      reason,
       mint: pos.mint,
       venue: pos.venue ?? 'pump',
       delayMs: pos.delayMs,
@@ -378,6 +478,16 @@ export class RobustDemoEngine extends DemoEngine {
   }
 
   _acceptEntry(pos, trade, detectedAt, delayMs) {
+    const venue = pos.venue ?? 'pump';
+    if (venue === 'pump') {
+      const meta = this.lastCurve.get(pos.mint);
+      if (meta && meta.quoteIsSol === false) {
+        this.skipped++;
+        this.skipReasons.curveQuoteNotSol++;
+        this._changed();
+        return false;
+      }
+    }
     if (pos.openedAt - (detectedAt + delayMs) > this.lateToleranceMs) {
       this.skipped++;
       this.skipReasons.late++;
@@ -385,7 +495,11 @@ export class RobustDemoEngine extends DemoEngine {
       return false;
     }
     if (pos.slipVsTargetPct < IMPLAUSIBLE_SLIP_PCT) {
-      this._recordRejection(pos);
+      this._recordRejection(pos, 'entry far cheaper than the wallet fill');
+      return false;
+    }
+    if (pos.slipVsTargetPct > IMPLAUSIBLE_HIGH_PCT) {
+      this._recordRejection(pos, 'entry far more expensive than the wallet fill');
       return false;
     }
     const cap = this.settings.maxPremiumPct;
@@ -394,6 +508,7 @@ export class RobustDemoEngine extends DemoEngine {
       this._changed();
       return false;
     }
+    this.mintsUsable.add(pos.mint);
     return true;
   }
 
@@ -410,6 +525,11 @@ export class RobustDemoEngine extends DemoEngine {
 
   async _openAmm(wallet, trade, delayMs, detectedAt, key) {
     if (this.positions.has(key) || this.busy.has(key)) return;
+    if (this.nonSolPools.has(trade.mint)) {
+      this.skipped++;
+      this.skipReasons.ammQuoteNotSol++;
+      return;
+    }
     if (!this.pools.has(trade.mint)) {
       this.skipped++;
       this.skipReasons.ammPoolUnknown++;
@@ -421,7 +541,8 @@ export class RobustDemoEngine extends DemoEngine {
       const st = await this._readPool(trade.mint);
       if (!st) {
         this.skipped++;
-        this.skipReasons.ammUnreadable++;
+        if (this.nonSolPools.has(trade.mint)) this.skipReasons.ammQuoteNotSol++;
+        else this.skipReasons.ammUnreadable++;
         return;
       }
       const now = Date.now();
@@ -528,6 +649,8 @@ export class RobustDemoEngine extends DemoEngine {
     this.counts.walletTrades++;
     if (trade.venue === 'pump') this.counts.onCurve++;
     else this.counts.onAmm++;
+    this.mintsSeen.add(trade.mint);
+    if (this.mintsSeen.size > 20000) this.mintsSeen.clear();
     if (trade.venue === 'pumpswap' && tx) this._learnPool(tx, trade.mint, wallet.address);
     const slot = this.sigSlot.get(signature);
     const seenAt = slot !== undefined ? this.slotSeen.get(slot) : undefined;
@@ -591,9 +714,12 @@ export class RobustDemoEngine extends DemoEngine {
 
   _coverage() {
     return {
+      startedAt: this.startedAt,
       walletTrades: this.counts.walletTrades,
       onCurve: this.counts.onCurve,
       onAmm: this.counts.onAmm,
+      distinctTokens: this.mintsSeen.size,
+      usableTokens: this.mintsUsable.size,
       skipped: this.skipped,
       unpriced: this.trades.filter((t) => t.pnlSol === null).length,
       rejected: this.rejected,
@@ -609,10 +735,15 @@ export class RobustDemoEngine extends DemoEngine {
     s.filtered = { ...this.filtered };
     s.premium = this._premiumBuckets();
     s.rawDumps = this.rawDumps.slice(0, 4);
-    s.poolDiag = { ok: { ...this.poolOk }, fails: this.poolFails.slice(0, 3) };
+    s.poolDiag = {
+      ok: { ...this.poolOk },
+      fails: this.poolFails.slice(0, 3),
+      layout: { verifiedReads: this.poolLayout.verifiedReads, mismatches: this.poolLayout.mismatches, last: this.poolLayout.last.slice(0, 3) },
+    };
     s.rpc = typeof this.rpc?.stats === 'function' ? this.rpc.stats() : null;
     s.errorLog = this.errorLog.slice(0, 15);
     s.pools = this.pools.size;
+    s.nonSolPools = this.nonSolPools.size;
     s.lastAmm = this.lastAmm;
     s.engine = { ammFeePct: this.ammFeePct, lateToleranceMs: this.lateToleranceMs, staleAfterS: this.staleAfterS };
     return s;
@@ -620,11 +751,16 @@ export class RobustDemoEngine extends DemoEngine {
 
   reset() {
     super.reset();
+    this.positions.clear();
     this.lagSamples = [];
     this.rejected = 0;
     this.lastMismatch = null;
     this.skipReasons = this._emptyReasons();
     this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0 };
     this.filtered = { tooSmall: 0, premiumTooHigh: 0 };
+    this.mintsSeen = new Set();
+    this.mintsUsable = new Set();
+    this.poolLayout = { verifiedReads: 0, mismatches: 0, last: [] };
+    this.startedAt = Date.now();
   }
 }
