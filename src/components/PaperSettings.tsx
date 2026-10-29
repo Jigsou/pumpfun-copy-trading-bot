@@ -2,7 +2,20 @@ import React, { useState } from 'react';
 import { ChevronRight, Eye, EyeOff, Filter, Key, Plus, SlidersHorizontal, Target, Trash2, Wallet } from 'lucide-react';
 import { useDemoSettings } from '@/hooks/useDemo';
 import type { DemoServer } from '@/hooks/useDemo';
-import { addWallet, onlyWallet, removeWallet, resetForm, setApiKey, setForm, settingsEqual, validateForm } from '@/lib/demoStore';
+import {
+  MAX_SCENARIOS,
+  addWallet,
+  delaysToList,
+  listToDelays,
+  nextDelay,
+  onlyWallet,
+  removeWallet,
+  resetForm,
+  setApiKey,
+  setForm,
+  settingsEqual,
+  validateForm,
+} from '@/lib/demoStore';
 import type { DemoForm } from '@/lib/demoStore';
 import { short } from '@/lib/demoShared';
 
@@ -64,6 +77,20 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
       {v.errors[key] ? <span className='field-error'>{v.errors[key]}</span> : hint ? <span className='hint'>{hint}</span> : null}
     </div>
   );
+
+  const delayRows = delaysToList(form.delays);
+  const rowInvalid = (d: string, i: number) => d === '' || !Number.isInteger(Number(d)) || Number(d) > 60000 || delayRows.indexOf(d) !== i;
+  const setDelayAt = (i: number, value: string) => {
+    const next = [...delayRows];
+    next[i] = value.replace(/[^0-9]/g, '');
+    setForm({ delays: listToDelays(next) });
+  };
+  const addDelay = () => {
+    if (delayRows.length < MAX_SCENARIOS) setForm({ delays: listToDelays([...delayRows, nextDelay(delayRows)]) });
+  };
+  const removeDelay = (i: number) => {
+    if (delayRows.length > 1) setForm({ delays: listToDelays(delayRows.filter((_, j) => j !== i)) });
+  };
 
   const handleAdd = () => {
     const address = newAddr.trim();
@@ -197,14 +224,54 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
         <MenuItem
           icon={<SlidersHorizontal className='w-4 h-4' />}
           title='Trade size and timing'
-          summary={`${form.buySol} SOL per trade, delays ${delaysText} ms, fee ${form.feePct} %`}
+          summary={`${form.buySol} SOL per trade, ${delayRows.length} scenario${delayRows.length === 1 ? '' : 's'} (${delaysText} ms), fee ${form.feePct} %`}
           open={section === 'trade'}
           onToggle={() => toggle('trade')}
         >
           <div className='grid grid-cols-2 gap-3'>
             {field('buySol', 'Amount per trade (SOL)', 'Simulated size of each copy.')}
             {field('timeoutMin', 'Max hold (minutes)', 'Exit if the wallet has not sold by then.')}
-            <div className='col-span-2'>{field('delays', 'Delays tested at the same time (ms)', 'Example: 300,1000,3000. Time between detecting the trade and your entry.')}</div>
+            <div className='col-span-2'>
+              <div className='field'>
+                <label>Scenarios: delays tested at the same time</label>
+                <div className='space-y-2'>
+                  {delayRows.map((d, i) => (
+                    <div key={i} className='flex items-center gap-2'>
+                      <span className='text-xs text-slate-400' style={{ width: 72 }}>
+                        Scenario {i + 1}
+                      </span>
+                      <input
+                        className={`input ${rowInvalid(d, i) ? 'invalid' : ''}`}
+                        inputMode='numeric'
+                        aria-label={`Delay of scenario ${i + 1} in milliseconds`}
+                        value={d}
+                        onChange={(e) => setDelayAt(i, e.target.value)}
+                      />
+                      <span className='text-xs text-slate-400'>ms</span>
+                      <button className='icon-btn danger' title='Remove this scenario' disabled={delayRows.length <= 1} onClick={() => removeDelay(i)}>
+                        <Trash2 className='w-4 h-4' />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className='flex items-center gap-2 mt-2'>
+                  <button className='btn btn-ghost' disabled={delayRows.length >= MAX_SCENARIOS} onClick={addDelay}>
+                    <Plus className='w-4 h-4' />
+                    Add scenario
+                  </button>
+                  <span className='hint'>
+                    {delayRows.length} of {MAX_SCENARIOS} scenarios
+                  </span>
+                </div>
+                {v.errors.delays ? (
+                  <span className='field-error'>{v.errors.delays}</span>
+                ) : (
+                  <span className='hint'>
+                    Each scenario is a time between detecting the trade and your simulated entry (0 to 60000 ms, all different). Operations already open keep their original scenarios.
+                  </span>
+                )}
+              </div>
+            </div>
             {field('feePct', 'Pump.fun fee (%)', '1.25 is the standard fee on the curve.')}
             {field('costPerTxSol', 'Cost per transaction (SOL)', 'Network fee plus tip for each buy or sell.')}
           </div>

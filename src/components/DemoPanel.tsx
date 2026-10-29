@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Activity, ExternalLink, Play, RotateCcw, Settings, ShieldCheck, Square, Wallet } from 'lucide-react';
+import { Activity, ChevronRight, ExternalLink, Play, RotateCcw, Settings, ShieldCheck, Square, Wallet } from 'lucide-react';
 import { useDemoServer, useDemoSettings } from '@/hooks/useDemo';
 import { settingsEqual, validateForm } from '@/lib/demoStore';
 import { openSettings } from '@/lib/uiEvents';
-import { fmtMs, fmtPct, fmtSol, fmtTime, short, tone, translateText } from '@/lib/demoShared';
+import { fmtMs, fmtPct, fmtSol, fmtTime, groupByOp, short, tone, translateText } from '@/lib/demoShared';
+import type { PositionRow, TradeRow } from '@/lib/demoShared';
 import { PremiumAnalysis } from './PremiumAnalysis';
 
 type TabKey = 'feed' | 'open' | 'closed';
@@ -55,10 +56,38 @@ const Stat: React.FC<StatProps> = ({ label, value, sub, valueClass = '' }) => (
   </div>
 );
 
+interface ToggleProps {
+  open: boolean;
+  label: string;
+  onClick: () => void;
+}
+const Toggle: React.FC<ToggleProps> = ({ open, label, onClick }) => (
+  <button type='button' className='icon-btn' aria-expanded={open} aria-label={label} title={label} onClick={onClick}>
+    <ChevronRight className='w-4 h-4' style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+  </button>
+);
+
+const fmtRange = (values: number[], fmt: (v: number) => string): string => {
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  return lo === hi ? fmt(lo) : `${fmt(lo)} to ${fmt(hi)}`;
+};
+
+const bySlowest = <T extends { delayMs: number }>(rows: T[]): T[] => [...rows].sort((a, b) => a.delayMs - b.delayMs);
+
 export const DemoPanel: React.FC = () => {
   const { state, serverUp, error, setError, send } = useDemoServer();
   const settings = useDemoSettings();
   const [tab, setTab] = useState<TabKey>('feed');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleOp = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const running = !!state?.running;
   const v = validateForm(settings.form);
@@ -94,7 +123,6 @@ export const DemoPanel: React.FC = () => {
 
   const walletState = (address: string) => state?.wallets.find((w) => w.address === address);
   const stats = state?.stats ?? [];
-  const totalN = stats.reduce((a, s) => a + s.n, 0);
   const slowest = stats.length ? stats[stats.length - 1] : null;
   const positions = state?.positions ?? [];
   const events = state?.events ?? [];
@@ -105,12 +133,24 @@ export const DemoPanel: React.FC = () => {
   const shown = applied ?? v.settings;
   const skipRows = Object.entries(state?.skipReasons ?? {}).filter(([, n]) => n > 0);
 
+  const ops = state?.ops;
+  const openOps = ops?.openOps ?? new Set(positions.map((p) => p.opId ?? p.key)).size;
+  const openScenarios = ops?.openScenarios ?? positions.length;
+  const closedOps = ops?.closedOps ?? trades.length;
+  const closedScenarios = ops?.closedScenarios ?? trades.length;
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  const openGroups = groupByOp<PositionRow>(positions, (p) => p.key)
+    .map((g) => ({ ...g, rows: bySlowest(g.rows) }))
+    .reverse();
+  const closedGroups = groupByOp<TradeRow>(trades, (t, i) => `${t.time}-${t.mint}-${t.delayMs}-${i}`).map((g) => ({ ...g, rows: bySlowest(g.rows) }));
+
   let verdict = 'Start the simulator and let it run.';
   let verdictClass = 'info';
   if (slowest && state) {
     const perDelay = Math.max(...stats.map((s) => s.n));
     if (perDelay < 50) {
-      verdict = `Not enough data: ${perDelay}/50 closed trades for the delay with the most data. Do not conclude anything yet.`;
+      verdict = `Not enough data: ${perDelay}/50 closed operations for the scenario with the most data. Do not conclude anything yet. Scenarios of the same operation are not independent.`;
       verdictClass = 'warn';
     } else if (slowest.totalPnlSol <= 0) {
       verdict = `At a ${slowest.delayMs} ms delay, the simulated PnL is negative (${fmtSol(slowest.totalPnlSol)} SOL). Copying this wallet would lose money at this delay.`;
@@ -142,6 +182,15 @@ export const DemoPanel: React.FC = () => {
       )}
     </li>
   );
+
+  const tokenLink = (mint: string) => (
+    <a className='link' href={`https://solscan.io/token/${mint}`} target='_blank' rel='noopener noreferrer'>
+      {short(mint)}
+      <ExternalLink className='w-3 h-3' />
+    </a>
+  );
+
+  const pnlChip = (pct: number | null) => <span className={`chip ${pct == null ? 'neutral' : pct >= 0 ? 'good' : 'bad'}`}>{fmtPct(pct)}</span>;
 
   return (
     <div className='space-y-5'>
@@ -202,7 +251,7 @@ export const DemoPanel: React.FC = () => {
       )}
       {dirty && (
         <div className='alert info flex flex-wrap items-center justify-between gap-3'>
-          <span>Your options changed but are not applied to the running simulation yet.</span>
+          <span>Your options changed but are not applied to the running simulation yet. Operations already open keep their original scenarios.</span>
           <span className='flex gap-2'>
             <button className='btn btn-ghost' onClick={() => openSettings()}>
               Review
@@ -228,7 +277,7 @@ export const DemoPanel: React.FC = () => {
         <Stat
           label={slowest ? `Net PnL at ${slowest.delayMs} ms` : 'Net PnL'}
           value={slowest && slowest.n ? `${fmtSol(slowest.totalPnlSol)} SOL` : '-'}
-          sub='Slowest delay tested'
+          sub='Slowest scenario tested'
           valueClass={tone(slowest && slowest.n ? slowest.totalPnlSol : null)}
         />
         <Stat
@@ -236,8 +285,8 @@ export const DemoPanel: React.FC = () => {
           value={slowest && slowest.winRate != null ? `${(slowest.winRate * 100).toFixed(0)} %` : '-'}
           sub={slowest ? `at ${slowest.delayMs} ms` : 'No data yet'}
         />
-        <Stat label='Closed trades' value={String(totalN)} sub={`${state?.skipped ?? 0} skipped`} />
-        <Stat label='Open positions' value={String(positions.length)} sub={`${state?.wallets.length ?? 0} wallet(s) followed`} />
+        <Stat label='Closed operations' value={String(closedOps)} sub={`${plural(closedScenarios, 'scenario')} - ${state?.skipped ?? 0} skipped`} />
+        <Stat label='Open operations' value={String(openOps)} sub={`${plural(openScenarios, 'scenario')} - ${state?.wallets.length ?? 0} wallet(s)`} />
         <Stat label='Detection lag' value={fmtMs(lat?.medianChainLagMs)} sub={`median - avg ${fmtMs(lat?.avgChainLagMs)}`} />
         <Stat label='Processing time' value={fmtMs(lat?.avgFetchMs)} sub={`average - ${lat?.samples ?? 0} samples`} />
       </div>
@@ -246,7 +295,7 @@ export const DemoPanel: React.FC = () => {
 
       <div className='grid grid-cols-1 lg:grid-cols-12 gap-5'>
         <div className='lg:col-span-8 space-y-5'>
-          <Panel title='Results by execution delay' icon={<Activity className='w-4 h-4 text-slate-400' />}>
+          <Panel title='Results by scenario (execution delay)' icon={<Activity className='w-4 h-4 text-slate-400' />}>
             <div className='panel-scroll'>
               <table className='data-table'>
                 <thead>
@@ -284,7 +333,8 @@ export const DemoPanel: React.FC = () => {
               {stats.length === 0 && <div className='empty'>No data yet.</div>}
             </div>
             <p className='text-xs text-slate-400 mt-3'>
-              You need at least 50 closed trades per delay, and several different tokens, before drawing any conclusion.
+              You need at least 50 closed operations per scenario, and several different tokens, before drawing any conclusion. The scenarios of one operation copy the same
+              trade, so they are alternatives, not independent observations, and their results must not be added together.
             </p>
           </Panel>
 
@@ -292,10 +342,10 @@ export const DemoPanel: React.FC = () => {
 
           <section className='panel'>
             <header className='panel-head'>
-              <div className='inline-flex gap-1 p-1 rounded-lg border border-white/10'>
+              <div className='inline-flex flex-wrap gap-1 p-1 rounded-lg border border-white/10'>
                 {tabButton('feed', `Wallet trades (${events.length})`)}
-                {tabButton('open', `Open positions (${positions.length})`)}
-                {tabButton('closed', `Closed trades (${trades.length})`)}
+                {tabButton('open', `Open positions (${plural(openOps, 'operation')} - ${plural(openScenarios, 'scenario')})`)}
+                {tabButton('closed', `Closed trades (${plural(closedOps, 'operation')} - ${plural(closedScenarios, 'scenario')})`)}
               </div>
             </header>
             <div className='panel-body'>
@@ -326,28 +376,50 @@ export const DemoPanel: React.FC = () => {
                   <table className='data-table'>
                     <thead>
                       <tr>
+                        <th />
                         <th>Wallet</th>
                         <th>Token</th>
-                        <th>Delay</th>
+                        <th>Scenarios</th>
                         <th>Vs target</th>
                         <th>Time</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {positions.map((p) => (
-                        <tr key={p.key}>
-                          <td>{p.label}</td>
-                          <td>
-                            <a className='link' href={`https://solscan.io/token/${p.mint}`} target='_blank' rel='noopener noreferrer'>
-                              {short(p.mint)}
-                              <ExternalLink className='w-3 h-3' />
-                            </a>
-                          </td>
-                          <td>{p.delayMs} ms</td>
-                          <td className={tone(-p.slipVsTargetPct)}>{fmtPct(p.slipVsTargetPct)}</td>
-                          <td>{fmtTime(p.openedAt)}</td>
-                        </tr>
-                      ))}
+                      {openGroups.map((g) => {
+                        const first = g.rows[0];
+                        const multi = g.rows.length > 1;
+                        const key = `open:${g.id}`;
+                        const isOpen = expanded.has(key);
+                        const total = first.scenarioTotal ?? g.rows.length;
+                        const label = multi ? `${g.rows.length}/${total} scenarios` : total > 1 ? `${first.delayMs} ms - 1/${total}` : `${first.delayMs} ms`;
+                        return (
+                          <React.Fragment key={key}>
+                            <tr>
+                              <td style={{ width: 36 }}>{multi && <Toggle open={isOpen} label={isOpen ? 'Hide the scenarios' : 'Show the scenarios'} onClick={() => toggleOp(key)} />}</td>
+                              <td>{first.label}</td>
+                              <td>{tokenLink(first.mint)}</td>
+                              <td>{label}</td>
+                              <td className={multi ? '' : tone(-first.slipVsTargetPct)}>
+                                {multi ? fmtRange(g.rows.map((r) => r.slipVsTargetPct), fmtPct) : fmtPct(first.slipVsTargetPct)}
+                              </td>
+                              <td>{fmtTime(Math.min(...g.rows.map((r) => r.openedAt)))}</td>
+                            </tr>
+                            {multi &&
+                              isOpen &&
+                              g.rows.map((r) => (
+                                <tr key={r.key} style={{ background: 'rgba(255,255,255,0.03)' }}>
+                                  <td />
+                                  <td colSpan={2} className='text-slate-400 text-xs'>
+                                    Scenario
+                                  </td>
+                                  <td>{r.delayMs} ms</td>
+                                  <td className={tone(-r.slipVsTargetPct)}>{fmtPct(r.slipVsTargetPct)}</td>
+                                  <td>{fmtTime(r.openedAt)}</td>
+                                </tr>
+                              ))}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                   {positions.length === 0 && <div className='empty'>No open positions.</div>}
@@ -359,10 +431,11 @@ export const DemoPanel: React.FC = () => {
                   <table className='data-table'>
                     <thead>
                       <tr>
+                        <th />
                         <th>Time</th>
                         <th>Wallet</th>
                         <th>Token</th>
-                        <th>Delay</th>
+                        <th>Scenarios</th>
                         <th>Vs target</th>
                         <th>Held</th>
                         <th>Exit</th>
@@ -371,26 +444,63 @@ export const DemoPanel: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {trades.slice(0, 50).map((t, i) => (
-                        <tr key={`${t.time}-${t.mint}-${t.delayMs}-${i}`}>
-                          <td>{fmtTime(t.time)}</td>
-                          <td>{t.label}</td>
-                          <td>
-                            <a className='link' href={`https://solscan.io/token/${t.mint}`} target='_blank' rel='noopener noreferrer'>
-                              {short(t.mint)}
-                              <ExternalLink className='w-3 h-3' />
-                            </a>
-                          </td>
-                          <td>{t.delayMs} ms</td>
-                          <td>{fmtPct(t.slipVsTargetPct)}</td>
-                          <td>{t.heldSec} s</td>
-                          <td>{translateText(t.reason)}</td>
-                          <td className={tone(t.pnlSol)}>{fmtSol(t.pnlSol)}</td>
-                          <td>
-                            <span className={`chip ${t.pnlPct == null ? 'neutral' : t.pnlPct >= 0 ? 'good' : 'bad'}`}>{fmtPct(t.pnlPct)}</span>
-                          </td>
-                        </tr>
-                      ))}
+                      {closedGroups.slice(0, 50).map((g) => {
+                        const first = g.rows[0];
+                        const multi = g.rows.length > 1;
+                        const key = `closed:${g.id}`;
+                        const isOpen = expanded.has(key);
+                        if (!multi) {
+                          return (
+                            <tr key={key}>
+                              <td />
+                              <td>{fmtTime(first.time)}</td>
+                              <td>{first.label}</td>
+                              <td>{tokenLink(first.mint)}</td>
+                              <td>{first.delayMs} ms</td>
+                              <td>{fmtPct(first.slipVsTargetPct)}</td>
+                              <td>{first.heldSec} s</td>
+                              <td>{translateText(first.reason)}</td>
+                              <td className={tone(first.pnlSol)}>{fmtSol(first.pnlSol)}</td>
+                              <td>{pnlChip(first.pnlPct)}</td>
+                            </tr>
+                          );
+                        }
+                        const pcts = g.rows.map((r) => r.pnlPct).filter((x): x is number => x != null);
+                        const reasons = [...new Set(g.rows.map((r) => translateText(r.reason)))];
+                        return (
+                          <React.Fragment key={key}>
+                            <tr>
+                              <td style={{ width: 36 }}>
+                                <Toggle open={isOpen} label={isOpen ? 'Hide the scenarios' : 'Show the scenarios'} onClick={() => toggleOp(key)} />
+                              </td>
+                              <td>{fmtTime(Math.max(...g.rows.map((r) => r.time)))}</td>
+                              <td>{first.label}</td>
+                              <td>{tokenLink(first.mint)}</td>
+                              <td>{g.rows.length} scenarios</td>
+                              <td>{fmtRange(g.rows.map((r) => r.slipVsTargetPct), fmtPct)}</td>
+                              <td>{fmtRange(g.rows.map((r) => r.heldSec), (x) => `${x} s`)}</td>
+                              <td>{reasons.length === 1 ? reasons[0] : 'Mixed'}</td>
+                              <td />
+                              <td>{pcts.length ? <span className='chip neutral'>{fmtRange(pcts, fmtPct)}</span> : pnlChip(null)}</td>
+                            </tr>
+                            {isOpen &&
+                              g.rows.map((r, i) => (
+                                <tr key={`${key}:${r.delayMs}:${i}`} style={{ background: 'rgba(255,255,255,0.03)' }}>
+                                  <td />
+                                  <td colSpan={3} className='text-slate-400 text-xs'>
+                                    Scenario closed {fmtTime(r.time)}
+                                  </td>
+                                  <td>{r.delayMs} ms</td>
+                                  <td>{fmtPct(r.slipVsTargetPct)}</td>
+                                  <td>{r.heldSec} s</td>
+                                  <td>{translateText(r.reason)}</td>
+                                  <td className={tone(r.pnlSol)}>{fmtSol(r.pnlSol)}</td>
+                                  <td>{pnlChip(r.pnlPct)}</td>
+                                </tr>
+                              ))}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                   {trades.length === 0 && <div className='empty'>No closed trades yet.</div>}
@@ -448,8 +558,10 @@ export const DemoPanel: React.FC = () => {
               <dl className='text-sm grid grid-cols-2 gap-y-2'>
                 <dt className='text-slate-400'>Amount per trade</dt>
                 <dd className='text-right'>{shown.buySol} SOL</dd>
-                <dt className='text-slate-400'>Delays</dt>
-                <dd className='text-right'>{shown.delaysMs.join(' / ')} ms</dd>
+                <dt className='text-slate-400'>Scenarios</dt>
+                <dd className='text-right'>
+                  {shown.delaysMs.length}: {shown.delaysMs.join(' / ')} ms
+                </dd>
                 <dt className='text-slate-400'>Pump.fun fee</dt>
                 <dd className='text-right'>{shown.feePct} %</dd>
                 <dt className='text-slate-400'>Max hold</dt>
@@ -506,12 +618,13 @@ export const DemoPanel: React.FC = () => {
               <ol>
                 <li>The bot watches the followed wallet through Helius. It never touches your money and never needs a private key.</li>
                 <li>
-                  When the wallet buys a token, the bot waits for each delay you configured, reads the real price at that moment and computes what your buy
-                  would have cost, fees included.
+                  When the wallet buys a token, that is one operation. For each scenario (a delay you configured), the bot waits, reads the real price at that moment and
+                  computes what your buy would have cost, fees included.
                 </li>
                 <li>When the wallet sells, the bot simulates your sell after the same delay. Otherwise the position closes after the max hold time.</li>
-                <li>A delay is the time between the bot seeing the trade and your simulated entry. Longer delays usually mean a worse price.</li>
-                <li>Positive results at the slowest delay, over many different tokens and several days, are the only ones worth trusting.</li>
+                <li>A scenario is the time between the bot seeing the trade and your simulated entry. Longer delays usually mean a worse price.</li>
+                <li>Click the arrow next to an operation to see each of its scenarios. Scenarios of one operation are alternatives for the same trade, never separate orders.</li>
+                <li>Positive results at the slowest scenario, over many different tokens and several days, are the only ones worth trusting.</li>
               </ol>
             </div>
           </details>
