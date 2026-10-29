@@ -596,6 +596,7 @@ export class RobustDemoEngine extends DemoEngine {
       const tokensRaw = st.base - k / (st.quote + solInNet);
       if (!(tokensRaw > 0)) return;
       const price = s.buySol / (tokensRaw / 10 ** st.decimals);
+      const supplyUi = this.supplyCache.get(trade.mint) ?? null;
       const pos = {
         key,
         opId: trade.opId ?? null,
@@ -613,6 +614,7 @@ export class RobustDemoEngine extends DemoEngine {
         entryPrice: price,
         targetPrice: trade.price,
         slipVsTargetPct: (price / trade.price - 1) * 100,
+        ...this._entryMetrics(trade, price, supplyUi, st.quote / 1e9),
         pipelineMs: now - detectedAt,
         closing: false,
       };
@@ -645,6 +647,7 @@ export class RobustDemoEngine extends DemoEngine {
       entryPrice: pos.entryPrice,
       targetPrice: pos.targetPrice,
       slipVsTargetPct: pos.slipVsTargetPct,
+      ...this._metricFields(pos),
       pipelineMs: pos.pipelineMs,
       heldSec: Math.round((Date.now() - pos.openedAt) / 1000),
       buySol: pos.buySol,

@@ -75,6 +75,9 @@ export class DemoEngine extends EventEmitter {
     this.pingTimer = null;
     this.reconnectTimer = null;
     this.notifyTimer = null;
+    this.createdCache = new Map();
+    this.createdJobs = new Map();
+    this.supplyCache = new Map();
   }
 
   addWallet(address, label) {
@@ -411,6 +414,73 @@ export class DemoEngine extends EventEmitter {
     await sleep(Math.max(0, ts - Date.now()));
   }
 
+  async _lookupCreatedAt(mint) {
+    try {
+      const list = await this.rpc('getSignaturesForAddress', [this.deps.curveAddress(mint), { limit: 1000, commitment: 'confirmed' }]);
+      if (!Array.isArray(list)) return { value: null, final: false };
+      if (list.length >= 1000) return { value: null, final: true };
+      const times = list.map((x) => x?.blockTime).filter((t) => typeof t === 'number');
+      return times.length ? { value: Math.min(...times), final: true } : { value: null, final: false };
+    } catch {
+      return { value: null, final: false };
+    }
+  }
+
+  async _createdAt(mint) {
+    if (this.createdCache.has(mint)) return this.createdCache.get(mint);
+    let job = this.createdJobs.get(mint);
+    if (!job) {
+      job = this._lookupCreatedAt(mint).finally(() => this.createdJobs.delete(mint));
+      this.createdJobs.set(mint, job);
+    }
+    const res = await job;
+    if (res.final) {
+      this.createdCache.set(mint, res.value);
+      if (this.createdCache.size > 500) this.createdCache.delete(this.createdCache.keys().next().value);
+    }
+    return res.value;
+  }
+
+  async _supplyUi(mint) {
+    if (this.supplyCache.has(mint)) return this.supplyCache.get(mint);
+    try {
+      const r = await this.rpc('getTokenSupply', [mint, { commitment: 'confirmed' }]);
+      const n = Number(r?.value?.uiAmountString ?? r?.value?.uiAmount);
+      if (!(Number.isFinite(n) && n > 0)) return null;
+      this.supplyCache.set(mint, n);
+      if (this.supplyCache.size > 500) this.supplyCache.delete(this.supplyCache.keys().next().value);
+      return n;
+    } catch {
+      return null;
+    }
+  }
+
+  _entryMetrics(trade, price, supplyUi, reserveSol) {
+    const hasSupply = Number.isFinite(supplyUi) && supplyUi > 0;
+    const walletSol = Number.isFinite(trade.sol) ? trade.sol : null;
+    const reserveOk = Number.isFinite(reserveSol) && reserveSol > 0;
+    return {
+      mcapSol: hasSupply ? price * supplyUi : null,
+      traderMcapSol: hasSupply && Number.isFinite(trade.price) ? trade.price * supplyUi : null,
+      ageSec: trade.meta?.ageSec ?? null,
+      walletSol,
+      reserveSol: reserveOk ? reserveSol : null,
+      impactPct: walletSol !== null && reserveOk ? (walletSol / reserveSol) * 100 : null,
+    };
+  }
+
+  _metricFields(pos) {
+    return {
+      venue: pos.venue === 'amm' ? 'pumpswap' : 'pump',
+      mcapSol: pos.mcapSol ?? null,
+      traderMcapSol: pos.traderMcapSol ?? null,
+      ageSec: pos.ageSec ?? null,
+      walletSol: pos.walletSol ?? null,
+      reserveSol: pos.reserveSol ?? null,
+      impactPct: pos.impactPct ?? null,
+    };
+  }
+
   async _onSignature(signature, detectedAt) {
     const tx = await this._getTx(signature);
     if (!tx) return;
@@ -448,7 +518,15 @@ export class DemoEngine extends EventEmitter {
     if (trade.side === 'buy') {
       this.sells.delete(wm);
       const delays = [...this.settings.delaysMs];
-      const op = { ...trade, opId: `${signature}|${wallet.address}`, scenarioTotal: delays.length };
+      const op = { ...trade, opId: `${signature}|${wallet.address}`, scenarioTotal: delays.length, blockTime: tx?.blockTime ?? null, meta: null };
+      if (this.rpc && trade.venue !== 'routed') {
+        this._createdAt(trade.mint)
+          .then((createdAt) => {
+            op.meta = { ageSec: createdAt != null && op.blockTime != null ? Math.max(0, op.blockTime - createdAt) : null };
+          })
+          .catch(() => {});
+        if (trade.venue === 'pumpswap') this._supplyUi(trade.mint).catch(() => {});
+      }
       await Promise.all(delays.map((d) => this._open(wallet, op, d, detectedAt)));
     } else {
       this.sells.set(wm, detectedAt);
@@ -492,6 +570,7 @@ export class DemoEngine extends EventEmitter {
       const tokensRaw = curve.vToken - k / (curve.vSol + solInLamports);
       if (!(tokensRaw > 0)) return;
       const price = s.buySol / (tokensRaw / 10 ** TOKEN_DECIMALS);
+      const supplyUi = curve.supply > 0 ? curve.supply / 10 ** TOKEN_DECIMALS : null;
       const pos = {
         key,
         opId: trade.opId ?? null,
@@ -507,6 +586,7 @@ export class DemoEngine extends EventEmitter {
         entryPrice: price,
         targetPrice: trade.price,
         slipVsTargetPct: (price / trade.price - 1) * 100,
+        ...this._entryMetrics(trade, price, supplyUi, curve.vSol / 1e9),
         pipelineMs: Date.now() - detectedAt,
         closing: false,
       };
@@ -543,6 +623,7 @@ export class DemoEngine extends EventEmitter {
         entryPrice: pos.entryPrice,
         targetPrice: pos.targetPrice,
         slipVsTargetPct: pos.slipVsTargetPct,
+        ...this._metricFields(pos),
         pipelineMs: pos.pipelineMs,
         heldSec: Math.round((Date.now() - pos.openedAt) / 1000),
         buySol: pos.buySol,

@@ -53,4 +53,45 @@ assert.ok(Math.abs(walletStats.totalPnlSol - 0.03) < 1e-9);
 assert.ok(Math.abs(walletStats.pnlWithoutBest - -0.02) < 1e-9);
 assert.equal(walletStats.medianSlipPct, 20);
 
+const m = engine._entryMetrics({ sol: 2, price: 0.000000002, meta: { ageSec: 42 } }, 0.000000003, 1000000000, 100);
+assert.ok(Math.abs(m.mcapSol - 3) < 1e-9);
+assert.ok(Math.abs(m.traderMcapSol - 2) < 1e-9);
+assert.equal(m.ageSec, 42);
+assert.equal(m.walletSol, 2);
+assert.equal(m.reserveSol, 100);
+assert.ok(Math.abs(m.impactPct - 2) < 1e-9);
+const empty = engine._entryMetrics({ sol: 1, price: 1 }, 1, null, 0);
+assert.equal(empty.mcapSol, null);
+assert.equal(empty.impactPct, null);
+assert.equal(empty.ageSec, null);
+assert.equal(engine._metricFields({ venue: 'amm', mcapSol: 5 }).venue, 'pumpswap');
+assert.equal(engine._metricFields({}).venue, 'pump');
+
+const calls = [];
+const e2 = new DemoEngine({ appendLog: () => {}, curveAddress: (mint) => `curve-${mint}` });
+e2.rpc = async (method) => {
+  calls.push(method);
+  if (method === 'getTokenSupply') return { value: { uiAmountString: '1000000000' } };
+  return [{ blockTime: 1000 }, { blockTime: 900 }, { blockTime: 950 }];
+};
+assert.equal(await e2._createdAt('M'), 900);
+assert.equal(await e2._createdAt('M'), 900);
+assert.equal(await e2._supplyUi('M'), 1000000000);
+assert.equal(await e2._supplyUi('M'), 1000000000);
+assert.deepEqual(calls, ['getSignaturesForAddress', 'getTokenSupply']);
+
+const e3 = new DemoEngine({ appendLog: () => {}, curveAddress: (mint) => `curve-${mint}` });
+e3.rpc = async () => Array.from({ length: 1000 }, (_, i) => ({ blockTime: 1000 + i }));
+assert.equal(await e3._createdAt('M'), null);
+
+let failing = true;
+const e4 = new DemoEngine({ appendLog: () => {}, curveAddress: (mint) => `curve-${mint}` });
+e4.rpc = async () => {
+  if (failing) throw new Error('boom');
+  return [{ blockTime: 500 }];
+};
+assert.equal(await e4._createdAt('M'), null);
+failing = false;
+assert.equal(await e4._createdAt('M'), 500);
+
 console.log('Scenario engine tests passed (real engine.js).');
