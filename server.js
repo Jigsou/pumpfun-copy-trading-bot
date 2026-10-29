@@ -8,7 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PublicKey } from '@solana/web3.js';
 import { PUMP_PROGRAM } from './demo/engine.js';
-import { RobustDemoEngine, createRpc } from './demo/robust.js';
+import { createRpc } from './demo/robust.js';
+import { DiagnosticDemoEngine } from './demo/diagnostic.js';
 import { createUpdater } from './demo/updater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +41,7 @@ app.use(cors({ origin: (origin, cb) => cb(null, !origin || isLocalOrigin(origin)
 const PUMP_PK = new PublicKey(PUMP_PROGRAM);
 const LOG_DIR = path.join(__dirname, 'demo', 'logs');
 
-const demo = new RobustDemoEngine({
+const demo = new DiagnosticDemoEngine({
   makeRpc: (apiKey) => createRpc({ url: `https://mainnet.helius-rpc.com/?api-key=${apiKey}` }),
   makeWs: (apiKey) => new WebSocket(`wss://mainnet.helius-rpc.com/?api-key=${apiKey}`),
   curveAddress: (mint) =>
