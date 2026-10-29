@@ -95,12 +95,21 @@ export const DemoPanel: React.FC = () => {
   const settings = useDemoSettings();
   const [tab, setTab] = useState<TabKey>('feed');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [openWallets, setOpenWallets] = useState<Set<string>>(new Set());
 
   const toggleOp = (key: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      return next;
+    });
+
+  const toggleWallet = (address: string) =>
+    setOpenWallets((prev) => {
+      const next = new Set(prev);
+      if (next.has(address)) next.delete(address);
+      else next.add(address);
       return next;
     });
 
@@ -541,46 +550,65 @@ export const DemoPanel: React.FC = () => {
                 const ws = walletState(w.address);
                 const wst = (ws as unknown as { stats?: WalletStats } | undefined)?.stats;
                 const copied = wst ? wst.closedOps + wst.openOps : 0;
+                const isOpen = openWallets.has(w.address);
+                const net = wst && wst.n ? wst.totalPnlSol : null;
                 return (
-                  <li key={w.address} className='wallet-row'>
-                    <div className='avatar'>{w.label.slice(0, 2).toUpperCase()}</div>
-                    <div className='min-w-0 flex-1'>
-                      <div className='truncate font-medium'>{w.label}</div>
-                      <a className='link text-xs' href={`https://pump.fun/profile/${w.address}`} target='_blank' rel='noopener noreferrer' title='Open this trader on Pump.fun'>
-                        {short(w.address)}
-                        <ExternalLink className='w-3 h-3' />
-                      </a>
-                      <div className='flex flex-wrap gap-1.5 mt-1.5'>
-                        <span className='chip good'>{ws?.buys ?? 0} buys</span>
-                        <span className='chip bad'>{ws?.sells ?? 0} sells</span>
-                        <span className='chip neutral'>{ws?.lastSeen ? fmtTime(ws.lastSeen) : 'no trade yet'}</span>
-                      </div>
-                      {wst && (
-                        <dl className='text-xs grid grid-cols-2 gap-y-1 mt-2'>
-                          <dt className='text-slate-400'>Operations</dt>
-                          <dd className='text-right'>
-                            {wst.closedOps} closed - {wst.openOps} open
-                          </dd>
-                          <dt className='text-slate-400'>Simulated buys</dt>
-                          <dd className='text-right'>
-                            {copied} of {ws?.buys ?? 0}
-                          </dd>
-                          <dt className='text-slate-400'>Win rate{wst.slowestDelayMs != null ? ` (${wst.slowestDelayMs} ms)` : ''}</dt>
-                          <dd className='text-right'>{wst.winRate == null ? '-' : `${Math.round(wst.winRate * 100)} % (${wst.wins}/${wst.n})`}</dd>
-                          <dt className='text-slate-400'>Net PnL</dt>
-                          <dd className={`text-right ${tone(wst.n ? wst.totalPnlSol : null)}`}>{wst.n ? `${fmtSol(wst.totalPnlSol)} SOL` : '-'}</dd>
-                          <dt className='text-slate-400'>Without best trade</dt>
-                          <dd className={`text-right ${tone(wst.pnlWithoutBest)}`}>{wst.pnlWithoutBest == null ? '-' : `${fmtSol(wst.pnlWithoutBest)} SOL`}</dd>
-                          <dt className='text-slate-400'>Avg PnL per trade</dt>
-                          <dd className={`text-right ${tone(wst.avgPnlPct)}`}>{fmtPct(wst.avgPnlPct)}</dd>
-                          <dt className='text-slate-400'>Paid vs wallet (median)</dt>
-                          <dd className='text-right'>{fmtPct(wst.medianSlipPct)}</dd>
-                        </dl>
-                      )}
-                      {wst && wst.n < 50 && (
-                        <p className='text-xs text-slate-400 mt-1'>Only {wst.n} closed trades at this scenario: too few to conclude anything about this trader.</p>
-                      )}
+                  <li key={w.address} className='wallet-row' style={{ display: 'block', paddingTop: 8, paddingBottom: 8 }}>
+                    <div className='flex items-center gap-2'>
+                      <Toggle
+                        open={isOpen}
+                        label={isOpen ? 'Hide the details of this trader' : 'Show the details of this trader'}
+                        onClick={() => toggleWallet(w.address)}
+                      />
+                      <div className='truncate font-medium min-w-0 flex-1'>{w.label}</div>
+                      <span className='text-xs text-slate-400 whitespace-nowrap'>
+                        {ws?.buys ?? 0} buys - {ws?.sells ?? 0} sells
+                      </span>
+                      <span className={`text-xs tabular-nums whitespace-nowrap ${tone(net)}`} title='Net PnL at the slowest scenario'>
+                        {net == null ? '-' : `${fmtSol(net)} SOL`}
+                      </span>
                     </div>
+                    {isOpen && (
+                      <div className='mt-2 flex items-start gap-3' style={{ paddingLeft: 4 }}>
+                        <div className='avatar'>{w.label.slice(0, 2).toUpperCase()}</div>
+                        <div className='min-w-0 flex-1'>
+                          <a className='link text-xs' href={`https://pump.fun/profile/${w.address}`} target='_blank' rel='noopener noreferrer' title='Open this trader on Pump.fun'>
+                            {short(w.address)}
+                            <ExternalLink className='w-3 h-3' />
+                          </a>
+                          <div className='flex flex-wrap gap-1.5 mt-1.5'>
+                            <span className='chip good'>{ws?.buys ?? 0} buys</span>
+                            <span className='chip bad'>{ws?.sells ?? 0} sells</span>
+                            <span className='chip neutral'>{ws?.lastSeen ? fmtTime(ws.lastSeen) : 'no trade yet'}</span>
+                          </div>
+                          {wst && (
+                            <dl className='text-xs grid grid-cols-2 gap-y-1 mt-2'>
+                              <dt className='text-slate-400'>Operations</dt>
+                              <dd className='text-right'>
+                                {wst.closedOps} closed - {wst.openOps} open
+                              </dd>
+                              <dt className='text-slate-400'>Simulated buys</dt>
+                              <dd className='text-right'>
+                                {copied} of {ws?.buys ?? 0}
+                              </dd>
+                              <dt className='text-slate-400'>Win rate{wst.slowestDelayMs != null ? ` (${wst.slowestDelayMs} ms)` : ''}</dt>
+                              <dd className='text-right'>{wst.winRate == null ? '-' : `${Math.round(wst.winRate * 100)} % (${wst.wins}/${wst.n})`}</dd>
+                              <dt className='text-slate-400'>Net PnL</dt>
+                              <dd className={`text-right ${tone(net)}`}>{net == null ? '-' : `${fmtSol(net)} SOL`}</dd>
+                              <dt className='text-slate-400'>Without best trade</dt>
+                              <dd className={`text-right ${tone(wst.pnlWithoutBest)}`}>{wst.pnlWithoutBest == null ? '-' : `${fmtSol(wst.pnlWithoutBest)} SOL`}</dd>
+                              <dt className='text-slate-400'>Avg PnL per trade</dt>
+                              <dd className={`text-right ${tone(wst.avgPnlPct)}`}>{fmtPct(wst.avgPnlPct)}</dd>
+                              <dt className='text-slate-400'>Paid vs wallet (median)</dt>
+                              <dd className='text-right'>{fmtPct(wst.medianSlipPct)}</dd>
+                            </dl>
+                          )}
+                          {wst && wst.n < 50 && (
+                            <p className='text-xs text-slate-400 mt-1'>Only {wst.n} closed trades at this scenario: too few to conclude anything about this trader.</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </li>
                 );
               })}
