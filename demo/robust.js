@@ -554,6 +554,8 @@ export class RobustDemoEngine extends DemoEngine {
       const price = s.buySol / (tokensRaw / 10 ** st.decimals);
       const pos = {
         key,
+        opId: trade.opId ?? null,
+        scenarioTotal: trade.scenarioTotal ?? 1,
         wallet: wallet.address,
         label: wallet.label,
         mint: trade.mint,
@@ -590,6 +592,8 @@ export class RobustDemoEngine extends DemoEngine {
     const feeF = 1 - this.ammFeePct / 100;
     const base = {
       time: Date.now(),
+      opId: pos.opId ?? null,
+      scenarioTotal: pos.scenarioTotal ?? 1,
       wallet: pos.wallet,
       label: pos.label,
       mint: pos.mint,

@@ -8,6 +8,8 @@ export interface WalletState {
 }
 export interface PositionRow {
   key: string;
+  opId?: string | null;
+  scenarioTotal?: number;
   wallet: string;
   label: string;
   mint: string;
@@ -20,6 +22,8 @@ export interface PositionRow {
 }
 export interface TradeRow {
   time: number;
+  opId?: string | null;
+  scenarioTotal?: number;
   wallet: string;
   label: string;
   mint: string;
@@ -92,6 +96,12 @@ export interface Premium {
   delayMs: number | null;
   buckets: PremiumBucket[];
 }
+export interface OpCounts {
+  openOps: number;
+  openScenarios: number;
+  closedOps: number;
+  closedScenarios: number;
+}
 export interface DemoState {
   running: boolean;
   connected: boolean;
@@ -101,6 +111,7 @@ export interface DemoState {
   trades: TradeRow[];
   events: EventRow[];
   stats: StatRow[];
+  ops?: OpCounts;
   skipped: number;
   latency?: Latency;
   coverage?: Coverage;
@@ -108,6 +119,27 @@ export interface DemoState {
   filtered?: { tooSmall: number; premiumTooHigh: number };
   skipReasons?: Record<string, number>;
   lastError: { message: string; time: number } | null;
+}
+
+export interface OpGroup<T> {
+  id: string;
+  rows: T[];
+}
+
+export function groupByOp<T extends { opId?: string | null }>(rows: T[], fallbackKey: (row: T, index: number) => string): OpGroup<T>[] {
+  const groups: OpGroup<T>[] = [];
+  const byId = new Map<string, OpGroup<T>>();
+  rows.forEach((row, i) => {
+    const id = row.opId ?? `solo:${fallbackKey(row, i)}`;
+    let g = byId.get(id);
+    if (!g) {
+      g = { id, rows: [] };
+      byId.set(id, g);
+      groups.push(g);
+    }
+    g.rows.push(row);
+  });
+  return groups;
 }
 
 const FR_EN: [string, string][] = [

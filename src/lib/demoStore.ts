@@ -31,6 +31,7 @@ export interface Validation {
   settings?: ParsedSettings;
 }
 
+export const MAX_SCENARIOS = 10;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const OLD_DEFAULT_LABEL = 'Cupsey ? (a verifier sur Solscan)';
 export const DEFAULT_LABEL = 'Cupsey ? (verify on Solscan)';
@@ -44,6 +45,16 @@ export const DEFAULT_FORM: DemoForm = {
   maxPremium: '0',
   minBuy: '0',
 };
+
+export const delaysToList = (delays: string): string[] => delays.split(',').map((s) => s.trim());
+export const listToDelays = (list: string[]): string => list.join(',');
+export function nextDelay(list: string[]): string {
+  const nums = list.map(Number).filter((n) => Number.isFinite(n));
+  const base = nums.length ? Math.max(...nums) : 0;
+  let next = Math.min(60000, base + 1000);
+  while (nums.includes(next)) next = (next + 1) % 60001;
+  return String(next);
+}
 
 const storage = (): Storage | null => (typeof localStorage !== 'undefined' ? localStorage : null);
 
@@ -139,13 +150,14 @@ export function validateForm(form: DemoForm): Validation {
   const timeoutMin = check('timeoutMin', 1, 1440, 'Max hold');
   const maxPremiumPct = check('maxPremium', 0, 1000, 'Max premium');
   const minWalletBuySol = check('minBuy', 0, 1000, 'Minimum buy');
-  const raw = form.delays
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(Number);
-  if (raw.length < 1 || raw.length > 6 || raw.some((d) => !Number.isInteger(d) || d < 0 || d > 60000)) {
-    errors.delays = 'Use 1 to 6 whole numbers between 0 and 60000, separated by commas.';
+  const parts = delaysToList(form.delays);
+  const raw = parts.map((s) => (s === '' ? NaN : Number(s)));
+  if (parts.length < 1 || parts.length > MAX_SCENARIOS) {
+    errors.delays = `Use 1 to ${MAX_SCENARIOS} scenarios.`;
+  } else if (raw.some((d) => !Number.isInteger(d) || d < 0 || d > 60000)) {
+    errors.delays = 'Each scenario needs a whole number of milliseconds between 0 and 60000.';
+  } else if (new Set(raw).size !== raw.length) {
+    errors.delays = 'Each scenario needs a different delay.';
   }
   if (Object.keys(errors).length) return { ok: false, errors };
   const delaysMs = [...new Set(raw)].sort((a, b) => a - b);
