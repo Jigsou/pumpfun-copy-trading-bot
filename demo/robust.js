@@ -122,7 +122,7 @@ export class RobustDemoEngine extends DemoEngine {
     this.lastAmm = null;
     this.errorLog = [];
     this.skipReasons = this._emptyReasons();
-    this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0 };
+    this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0, routed: 0 };
     this.filtered = { tooSmall: 0, premiumTooHigh: 0 };
     this.rawDumps = [];
     this.dumpedMints = new Set();
@@ -145,6 +145,7 @@ export class RobustDemoEngine extends DemoEngine {
       ammUnreadable: 0,
       txNotFound: 0,
       notATrade: 0,
+      routed: 0,
     };
   }
 
@@ -230,6 +231,48 @@ export class RobustDemoEngine extends DemoEngine {
       return null;
     }
     return tx;
+  }
+
+  _venueFor(tx, mint) {
+    const ixs = this._allInstructions(tx);
+    const touches = (program) =>
+      ixs.some((ix) => ix.programId === program && Array.isArray(ix.accounts) && ix.accounts.some((a) => (typeof a === 'string' ? a : a?.pubkey) === mint));
+    if (touches(PUMP_PROGRAM)) return 'pump';
+    if (touches(PUMPSWAP_PROGRAM)) return 'pumpswap';
+    return 'routed';
+  }
+
+  _parseTrade(tx, keys, target) {
+    if (!tx || tx.meta?.err) return null;
+    if (!keys.includes(PUMP_PROGRAM) && !keys.includes(PUMPSWAP_PROGRAM)) return null;
+    const idx = keys.indexOf(target);
+    if (idx < 0) return null;
+    const ui = (b) => Number(b.uiTokenAmount.uiAmountString ?? b.uiTokenAmount.uiAmount ?? 0);
+    const pre = new Map();
+    const post = new Map();
+    let wsolDelta = 0;
+    for (const b of tx.meta.preTokenBalances ?? []) {
+      if (b.owner !== target) continue;
+      if (b.mint === WSOL) wsolDelta -= ui(b);
+      else pre.set(b.mint, (pre.get(b.mint) ?? 0) + ui(b));
+    }
+    for (const b of tx.meta.postTokenBalances ?? []) {
+      if (b.owner !== target) continue;
+      if (b.mint === WSOL) wsolDelta += ui(b);
+      else post.set(b.mint, (post.get(b.mint) ?? 0) + ui(b));
+    }
+    const solDelta = (tx.meta.postBalances[idx] - tx.meta.preBalances[idx]) / 1e9 + wsolDelta;
+    let best = null;
+    for (const mint of new Set([...pre.keys(), ...post.keys()])) {
+      const delta = (post.get(mint) ?? 0) - (pre.get(mint) ?? 0);
+      if (delta !== 0 && (!best || Math.abs(delta) > Math.abs(best.delta))) best = { mint, delta };
+    }
+    if (!best) return null;
+    const side = best.delta > 0 ? 'buy' : 'sell';
+    const tokens = Math.abs(best.delta);
+    const sol = Math.abs(solDelta);
+    if (sol === 0 || (side === 'buy' && solDelta > 0) || (side === 'sell' && solDelta < 0)) return null;
+    return { venue: this._venueFor(tx, best.mint), mint: best.mint, side, tokens, sol, price: sol / tokens };
   }
 
   async _fetchCurve(mint) {
@@ -513,6 +556,7 @@ export class RobustDemoEngine extends DemoEngine {
   }
 
   async _open(wallet, trade, delayMs, detectedAt) {
+    if (trade.venue === 'routed') return;
     const min = this.settings.minWalletBuySol;
     if (min > 0 && trade.sol < min) {
       this.filtered.tooSmall++;
@@ -652,7 +696,13 @@ export class RobustDemoEngine extends DemoEngine {
   _handleTrade(wallet, trade, tx, detectedAt, signature) {
     this.counts.walletTrades++;
     if (trade.venue === 'pump') this.counts.onCurve++;
-    else this.counts.onAmm++;
+    else if (trade.venue === 'routed') {
+      this.counts.routed++;
+      if (trade.side === 'buy') {
+        this.skipped++;
+        this.skipReasons.routed++;
+      }
+    } else this.counts.onAmm++;
     this.mintsSeen.add(trade.mint);
     if (this.mintsSeen.size > 20000) this.mintsSeen.clear();
     if (trade.venue === 'pumpswap' && tx) this._learnPool(tx, trade.mint, wallet.address);
@@ -722,6 +772,7 @@ export class RobustDemoEngine extends DemoEngine {
       walletTrades: this.counts.walletTrades,
       onCurve: this.counts.onCurve,
       onAmm: this.counts.onAmm,
+      routed: this.counts.routed,
       distinctTokens: this.mintsSeen.size,
       usableTokens: this.mintsUsable.size,
       skipped: this.skipped,
@@ -760,7 +811,7 @@ export class RobustDemoEngine extends DemoEngine {
     this.rejected = 0;
     this.lastMismatch = null;
     this.skipReasons = this._emptyReasons();
-    this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0 };
+    this.counts = { walletTrades: 0, onCurve: 0, onAmm: 0, routed: 0 };
     this.filtered = { tooSmall: 0, premiumTooHigh: 0 };
     this.mintsSeen = new Set();
     this.mintsUsable = new Set();
