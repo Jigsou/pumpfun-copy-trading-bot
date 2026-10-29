@@ -555,7 +555,7 @@ export const DemoPanel: React.FC = () => {
                         <span className='chip bad'>{ws?.sells ?? 0} sells</span>
                         <span className='chip neutral'>{ws?.lastSeen ? fmtTime(ws.lastSeen) : 'no trade yet'}</span>
                       </div>
-                      {wst && copied > 0 && (
+                      {wst && (
                         <dl className='text-xs grid grid-cols-2 gap-y-1 mt-2'>
                           <dt className='text-slate-400'>Operations</dt>
                           <dd className='text-right'>
@@ -577,7 +577,7 @@ export const DemoPanel: React.FC = () => {
                           <dd className='text-right'>{fmtPct(wst.medianSlipPct)}</dd>
                         </dl>
                       )}
-                      {wst && copied > 0 && wst.n < 50 && (
+                      {wst && wst.n < 50 && (
                         <p className='text-xs text-slate-400 mt-1'>Only {wst.n} closed trades at this scenario: too few to conclude anything about this trader.</p>
                       )}
                     </div>
