@@ -386,7 +386,7 @@ export const DemoPanel: React.FC = () => {
 
       <div className={`alert ${verdictClass}`}>{verdict}</div>
 
-      <div className='grid grid-cols-1 lg:grid-cols-12 gap-5'>
+      <div className='grid grid-cols-1 lg:grid-cols-12 gap-5 items-start'>
         <div className='lg:col-span-8 space-y-5'>
           <Panel title='Results by scenario (execution delay)' icon={<Activity className='w-4 h-4 text-slate-400' />}>
             <div className='panel-scroll'>
@@ -545,60 +545,6 @@ export const DemoPanel: React.FC = () => {
               <div className='empty'>Some options are invalid. Open Change to fix them.</div>
             )}
           </Panel>
-
-          {cov && (cov.walletTrades > 0 || cov.rejected > 0) && (
-            <Panel title='Coverage and skipped trades'>
-              <ul className='text-sm text-slate-400 space-y-1'>
-                <li>
-                  {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve, {cov.onAmm} on PumpSwap.
-                </li>
-                {routedTrades > 0 && <li>{routedTrades} went through a router or another exchange and are not simulated.</li>}
-                {cov.distinctTokens != null && (
-                  <li>
-                    {cov.distinctTokens} distinct tokens traded by the wallets, {cov.usableTokens ?? 0} with at least one valid simulated entry.
-                  </li>
-                )}
-                <li>{cov.unpriced} simulated trades closed without a price.</li>
-                <li>{cov.rejected} simulated entries rejected because their price looked impossible compared with the wallet fill.</li>
-              </ul>
-              {skipRows.length > 0 && (
-                <details className='mt-3'>
-                  <summary className='cursor-pointer text-slate-300 text-sm'>Why trades were skipped</summary>
-                  <ul className='text-xs text-slate-400 mt-2 space-y-1'>
-                    {skipRows.map(([key, n]) => (
-                      <li key={key} className='flex justify-between gap-3'>
-                        <span>{SKIP_LABELS[key] ?? key}</span>
-                        <span className='tabular-nums'>{n}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-              {cov.lastMismatch && (
-                <details className='mt-3'>
-                  <summary className='cursor-pointer text-slate-300 text-sm'>Diagnostic of the last rejected entry</summary>
-                  <pre className='text-xs text-slate-400 overflow-x-auto mt-2'>{JSON.stringify(cov.lastMismatch, null, 2)}</pre>
-                </details>
-              )}
-            </Panel>
-          )}
-
-          <details className='panel help'>
-            <summary className='panel-body'>How does this work, and how do I read the results?</summary>
-            <div className='panel-body' style={{ paddingTop: 0 }}>
-              <ol>
-                <li>The bot watches the followed wallet through Helius. It never touches your money and never needs a private key.</li>
-                <li>
-                  When the wallet buys a token, that is one operation. For each scenario (a delay you configured), the bot waits, reads the real price at that moment and
-                  computes what your buy would have cost, fees included.
-                </li>
-                <li>When the wallet sells, the bot simulates your sell after the same delay. Otherwise the position closes after the max hold time.</li>
-                <li>A scenario is the time between the bot seeing the trade and your simulated entry. Longer delays usually mean a worse price.</li>
-                <li>Click the arrow next to an operation to see each of its scenarios. Scenarios of one operation are alternatives for the same trade, never separate orders.</li>
-                <li>Positive results at the slowest scenario, over many different tokens and several days, are the only ones worth trusting.</li>
-              </ol>
-            </div>
-          </details>
         </div>
       </div>
 
@@ -793,6 +739,64 @@ export const DemoPanel: React.FC = () => {
           )}
         </div>
       </section>
+
+      <div className='grid grid-cols-1 lg:grid-cols-2 gap-5 items-start'>
+        {cov && (cov.walletTrades > 0 || cov.rejected > 0) ? (
+          <Panel title='Coverage and skipped trades'>
+            <ul className='text-sm text-slate-400 space-y-1'>
+              <li>
+                {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve, {cov.onAmm} on PumpSwap.
+              </li>
+              {routedTrades > 0 && <li>{routedTrades} went through a router or another exchange and are not simulated.</li>}
+              {cov.distinctTokens != null && (
+                <li>
+                  {cov.distinctTokens} distinct tokens traded by the wallets, {cov.usableTokens ?? 0} with at least one valid simulated entry.
+                </li>
+              )}
+              <li>{cov.unpriced} simulated trades closed without a price.</li>
+              <li>{cov.rejected} simulated entries rejected because their price looked impossible compared with the wallet fill.</li>
+            </ul>
+            {skipRows.length > 0 && (
+              <details className='mt-3'>
+                <summary className='cursor-pointer text-slate-300 text-sm'>Why trades were skipped</summary>
+                <ul className='text-xs text-slate-400 mt-2 space-y-1'>
+                  {skipRows.map(([key, n]) => (
+                    <li key={key} className='flex justify-between gap-3'>
+                      <span>{SKIP_LABELS[key] ?? key}</span>
+                      <span className='tabular-nums'>{n}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {cov.lastMismatch && (
+              <details className='mt-3'>
+                <summary className='cursor-pointer text-slate-300 text-sm'>Diagnostic of the last rejected entry</summary>
+                <pre className='text-xs text-slate-400 overflow-x-auto mt-2'>{JSON.stringify(cov.lastMismatch, null, 2)}</pre>
+              </details>
+            )}
+          </Panel>
+        ) : (
+          <div />
+        )}
+
+        <details className='panel help'>
+          <summary className='panel-body'>How does this work, and how do I read the results?</summary>
+          <div className='panel-body' style={{ paddingTop: 0 }}>
+            <ol>
+              <li>The bot watches the followed wallet through Helius. It never touches your money and never needs a private key.</li>
+              <li>
+                When the wallet buys a token, that is one operation. For each scenario (a delay you configured), the bot waits, reads the real price at that moment and
+                computes what your buy would have cost, fees included.
+              </li>
+              <li>When the wallet sells, the bot simulates your sell after the same delay. Otherwise the position closes after the max hold time.</li>
+              <li>A scenario is the time between the bot seeing the trade and your simulated entry. Longer delays usually mean a worse price.</li>
+              <li>Click the arrow next to an operation to see each of its scenarios. Scenarios of one operation are alternatives for the same trade, never separate orders.</li>
+              <li>Positive results at the slowest scenario, over many different tokens and several days, are the only ones worth trusting.</li>
+            </ol>
+          </div>
+        </details>
+      </div>
     </div>
   );
 };
