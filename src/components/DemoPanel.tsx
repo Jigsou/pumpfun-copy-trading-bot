@@ -8,6 +8,38 @@ import type { PositionRow, TradeRow } from '@/lib/demoShared';
 import { PremiumAnalysis } from './PremiumAnalysis';
 
 type TabKey = 'feed' | 'open' | 'closed';
+type SortMode = 'newest' | 'oldest' | 'pnl-desc' | 'pnl-asc' | 'held-desc' | 'held-asc' | 'slip-desc' | 'slip-asc';
+
+const SORT_LABELS: Record<SortMode, string> = {
+  newest: 'Newest first',
+  oldest: 'Oldest first',
+  'pnl-desc': 'PnL: highest to lowest',
+  'pnl-asc': 'PnL: lowest to highest',
+  'held-desc': 'Held: longest first',
+  'held-asc': 'Held: shortest first',
+  'slip-desc': 'Vs target: highest to lowest',
+  'slip-asc': 'Vs target: lowest to highest',
+};
+const OPEN_SORTS: SortMode[] = ['newest', 'oldest', 'slip-desc', 'slip-asc'];
+const CLOSED_SORTS: SortMode[] = ['newest', 'oldest', 'pnl-desc', 'pnl-asc', 'held-desc', 'held-asc', 'slip-desc', 'slip-asc'];
+
+const sortDir = (mode: SortMode): 1 | -1 => (mode === 'oldest' || mode.endsWith('asc') ? 1 : -1);
+const compareNullable = (a: number | null, b: number | null, dir: 1 | -1): number => {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return (a - b) * dir;
+};
+
+const fmtHeld = (sec: number): string => {
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return s ? `${m} min ${s} s` : `${m} min`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `${h} h ${mm} min` : `${h} h`;
+};
 
 interface WalletStats {
   slowestDelayMs: number | null;
@@ -96,6 +128,8 @@ export const DemoPanel: React.FC = () => {
   const [tab, setTab] = useState<TabKey>('feed');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [openWallets, setOpenWallets] = useState<Set<string>>(new Set());
+  const [hiddenWallets, setHiddenWallets] = useState<Set<string>>(new Set());
+  const [sortMode, setSortMode] = useState<SortMode>('newest');
 
   const toggleOp = (key: string) =>
     setExpanded((prev) => {
@@ -107,6 +141,14 @@ export const DemoPanel: React.FC = () => {
 
   const toggleWallet = (address: string) =>
     setOpenWallets((prev) => {
+      const next = new Set(prev);
+      if (next.has(address)) next.delete(address);
+      else next.add(address);
+      return next;
+    });
+
+  const toggleHidden = (address: string) =>
+    setHiddenWallets((prev) => {
       const next = new Set(prev);
       if (next.has(address)) next.delete(address);
       else next.add(address);
@@ -165,10 +207,36 @@ export const DemoPanel: React.FC = () => {
   const closedScenarios = ops?.closedScenarios ?? trades.length;
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-  const openGroups = groupByOp<PositionRow>(positions, (p) => p.key)
+  const filtering = hiddenWallets.size > 0;
+  const eventsF = events.filter((e) => !hiddenWallets.has(e.wallet));
+  const positionsF = positions.filter((p) => !hiddenWallets.has(p.wallet));
+  const tradesF = trades.filter((t) => !hiddenWallets.has(t.wallet));
+
+  const sortChoices = tab === 'open' ? OPEN_SORTS : CLOSED_SORTS;
+  const activeSort: SortMode = sortChoices.includes(sortMode) ? sortMode : 'newest';
+  const dir = sortDir(activeSort);
+
+  const openKey = (rows: PositionRow[]): number | null => {
+    if (activeSort.startsWith('slip')) return rows[rows.length - 1].slipVsTargetPct;
+    return Math.min(...rows.map((r) => r.openedAt));
+  };
+  const closedKey = (rows: TradeRow[]): number | null => {
+    const last = rows[rows.length - 1];
+    if (activeSort.startsWith('pnl')) return last.pnlPct;
+    if (activeSort.startsWith('held')) return last.heldSec;
+    if (activeSort.startsWith('slip')) return last.slipVsTargetPct;
+    return Math.max(...rows.map((r) => r.time));
+  };
+
+  const openGroups = groupByOp<PositionRow>(positionsF, (p) => p.key)
     .map((g) => ({ ...g, rows: bySlowest(g.rows) }))
-    .reverse();
-  const closedGroups = groupByOp<TradeRow>(trades, (t, i) => `${t.time}-${t.mint}-${t.delayMs}-${i}`).map((g) => ({ ...g, rows: bySlowest(g.rows) }));
+    .sort((a, b) => compareNullable(openKey(a.rows), openKey(b.rows), dir));
+  const closedGroups = groupByOp<TradeRow>(tradesF, (t, i) => `${t.time}-${t.mint}-${t.delayMs}-${i}`)
+    .map((g) => ({ ...g, rows: bySlowest(g.rows) }))
+    .sort((a, b) => compareNullable(closedKey(a.rows), closedKey(b.rows), dir));
+
+  const openCount = filtering ? openGroups.length : openOps;
+  const closedCount = filtering ? closedGroups.length : closedOps;
 
   let verdict = 'Start the simulator and let it run.';
   let verdictClass = 'info';
@@ -364,175 +432,6 @@ export const DemoPanel: React.FC = () => {
           </Panel>
 
           <PremiumAnalysis premium={state?.premium} filtered={state?.filtered} settings={applied} />
-
-          <section className='panel'>
-            <header className='panel-head'>
-              <div className='inline-flex flex-wrap gap-1 p-1 rounded-lg border border-white/10'>
-                {tabButton('feed', `Wallet trades (${events.length})`)}
-                {tabButton('open', `Open positions (${openScenarios})`)}
-                {tabButton('closed', `Closed trades (${closedScenarios})`)}
-              </div>
-            </header>
-            <div className='panel-body'>
-              {tab === 'feed' && (
-                <div>
-                  {events.length === 0 && <div className='empty'>Waiting for a wallet trade...</div>}
-                  <ul>
-                    {events.slice(0, 15).map((ev) => (
-                      <li key={`${ev.signature}-${ev.wallet}`} className='feed-item flex-wrap'>
-                        <span className={`chip ${ev.side === 'buy' ? 'good' : 'bad'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</span>
-                        <span className='font-semibold tabular-nums'>{ev.sol.toFixed(3)} SOL</span>
-                        <a className='link' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
-                          {short(ev.mint)}
-                          <ExternalLink className='w-3 h-3' />
-                        </a>
-                        <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : ev.venue === 'routed' ? 'Routed' : 'PumpSwap'}</span>
-                        <span className='ml-auto text-slate-400 text-xs'>
-                          {ev.label} - {fmtTime(ev.time)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {tab === 'open' && (
-                <div className='panel-scroll'>
-                  <table className='data-table'>
-                    <thead>
-                      <tr>
-                        <th />
-                        <th>Wallet</th>
-                        <th>Token</th>
-                        <th>Scenarios</th>
-                        <th>Vs target</th>
-                        <th>Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {openGroups.map((g) => {
-                        const first = g.rows[0];
-                        const multi = g.rows.length > 1;
-                        const key = `open:${g.id}`;
-                        const isOpen = expanded.has(key);
-                        const total = first.scenarioTotal ?? g.rows.length;
-                        const label = multi ? `${g.rows.length}/${total} scenarios` : total > 1 ? `${first.delayMs} ms - 1/${total}` : `${first.delayMs} ms`;
-                        return (
-                          <React.Fragment key={key}>
-                            <tr>
-                              <td style={{ width: 36 }}>{multi && <Toggle open={isOpen} label={isOpen ? 'Hide the scenarios' : 'Show the scenarios'} onClick={() => toggleOp(key)} />}</td>
-                              <td>{first.label}</td>
-                              <td>{tokenLink(first.mint)}</td>
-                              <td>{label}</td>
-                              <td className={multi ? '' : tone(-first.slipVsTargetPct)}>
-                                {multi ? fmtRange(g.rows.map((r) => r.slipVsTargetPct), fmtPct) : fmtPct(first.slipVsTargetPct)}
-                              </td>
-                              <td>{fmtTime(Math.min(...g.rows.map((r) => r.openedAt)))}</td>
-                            </tr>
-                            {multi &&
-                              isOpen &&
-                              g.rows.map((r) => (
-                                <tr key={r.key} style={{ background: 'rgba(255,255,255,0.03)' }}>
-                                  <td />
-                                  <td colSpan={2} className='text-slate-400 text-xs'>
-                                    Scenario
-                                  </td>
-                                  <td>{r.delayMs} ms</td>
-                                  <td className={tone(-r.slipVsTargetPct)}>{fmtPct(r.slipVsTargetPct)}</td>
-                                  <td>{fmtTime(r.openedAt)}</td>
-                                </tr>
-                              ))}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  {positions.length === 0 && <div className='empty'>No open positions.</div>}
-                </div>
-              )}
-
-              {tab === 'closed' && (
-                <div className='panel-scroll'>
-                  <table className='data-table'>
-                    <thead>
-                      <tr>
-                        <th />
-                        <th>Time</th>
-                        <th>Wallet</th>
-                        <th>Token</th>
-                        <th>Scenarios</th>
-                        <th>Vs target</th>
-                        <th>Held</th>
-                        <th>Exit</th>
-                        <th>PnL (SOL)</th>
-                        <th>PnL</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {closedGroups.slice(0, 50).map((g) => {
-                        const first = g.rows[0];
-                        const multi = g.rows.length > 1;
-                        const key = `closed:${g.id}`;
-                        const isOpen = expanded.has(key);
-                        if (!multi) {
-                          return (
-                            <tr key={key}>
-                              <td />
-                              <td>{fmtTime(first.time)}</td>
-                              <td>{first.label}</td>
-                              <td>{tokenLink(first.mint)}</td>
-                              <td>{first.delayMs} ms</td>
-                              <td>{fmtPct(first.slipVsTargetPct)}</td>
-                              <td>{first.heldSec} s</td>
-                              <td>{translateText(first.reason)}</td>
-                              <td className={tone(first.pnlSol)}>{fmtSol(first.pnlSol)}</td>
-                              <td>{pnlChip(first.pnlPct)}</td>
-                            </tr>
-                          );
-                        }
-                        const pcts = g.rows.map((r) => r.pnlPct).filter((x): x is number => x != null);
-                        const reasons = [...new Set(g.rows.map((r) => translateText(r.reason)))];
-                        return (
-                          <React.Fragment key={key}>
-                            <tr>
-                              <td style={{ width: 36 }}>
-                                <Toggle open={isOpen} label={isOpen ? 'Hide the scenarios' : 'Show the scenarios'} onClick={() => toggleOp(key)} />
-                              </td>
-                              <td>{fmtTime(Math.max(...g.rows.map((r) => r.time)))}</td>
-                              <td>{first.label}</td>
-                              <td>{tokenLink(first.mint)}</td>
-                              <td>{g.rows.length} scenarios</td>
-                              <td>{fmtRange(g.rows.map((r) => r.slipVsTargetPct), fmtPct)}</td>
-                              <td>{fmtRange(g.rows.map((r) => r.heldSec), (x) => `${x} s`)}</td>
-                              <td>{reasons.length === 1 ? reasons[0] : 'Mixed'}</td>
-                              <td />
-                              <td>{pcts.length ? <span className='chip neutral'>{fmtRange(pcts, fmtPct)}</span> : pnlChip(null)}</td>
-                            </tr>
-                            {isOpen &&
-                              g.rows.map((r, i) => (
-                                <tr key={`${key}:${r.delayMs}:${i}`} style={{ background: 'rgba(255,255,255,0.03)' }}>
-                                  <td />
-                                  <td colSpan={3} className='text-slate-400 text-xs'>
-                                    Scenario closed {fmtTime(r.time)}
-                                  </td>
-                                  <td>{r.delayMs} ms</td>
-                                  <td>{fmtPct(r.slipVsTargetPct)}</td>
-                                  <td>{r.heldSec} s</td>
-                                  <td>{translateText(r.reason)}</td>
-                                  <td className={tone(r.pnlSol)}>{fmtSol(r.pnlSol)}</td>
-                                  <td>{pnlChip(r.pnlPct)}</td>
-                                </tr>
-                              ))}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  {trades.length === 0 && <div className='empty'>No closed trades yet.</div>}
-                </div>
-              )}
-            </div>
-          </section>
         </div>
 
         <div className='lg:col-span-4 space-y-5'>
@@ -702,6 +601,198 @@ export const DemoPanel: React.FC = () => {
           </details>
         </div>
       </div>
+
+      <section className='panel'>
+        <header className='panel-head'>
+          <div className='inline-flex flex-wrap gap-1 p-1 rounded-lg border border-white/10'>
+            {tabButton('feed', `Wallet trades (${eventsF.length})`)}
+            {tabButton('open', `Open positions (${openCount})`)}
+            {tabButton('closed', `Closed trades (${closedCount})`)}
+          </div>
+        </header>
+        <div className='panel-body'>
+          <div className='flex flex-wrap items-center gap-x-4 gap-y-2 mb-3'>
+            <div className='flex flex-wrap items-center gap-3'>
+              <span className='text-xs text-slate-400'>Show trades of</span>
+              {settings.wallets.map((w) => (
+                <label key={w.address} className='inline-flex items-center gap-1.5 text-sm cursor-pointer'>
+                  <input type='checkbox' checked={!hiddenWallets.has(w.address)} onChange={() => toggleHidden(w.address)} />
+                  <span>{w.label}</span>
+                </label>
+              ))}
+            </div>
+            {tab !== 'feed' && (
+              <label className='inline-flex items-center gap-2 text-xs text-slate-400 ml-auto'>
+                Sort by
+                <select className='input' style={{ width: 'auto' }} value={activeSort} onChange={(e) => setSortMode(e.target.value as SortMode)}>
+                  {sortChoices.map((m) => (
+                    <option key={m} value={m}>
+                      {SORT_LABELS[m]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+          {tab === 'feed' && (
+            <div>
+              {eventsF.length === 0 && <div className='empty'>Waiting for a wallet trade...</div>}
+              <ul>
+                {eventsF.slice(0, 15).map((ev) => (
+                  <li key={`${ev.signature}-${ev.wallet}`} className='feed-item flex-wrap'>
+                    <span className={`chip ${ev.side === 'buy' ? 'good' : 'bad'}`}>{ev.side === 'buy' ? 'Buy' : 'Sell'}</span>
+                    <span className='font-semibold tabular-nums'>{ev.sol.toFixed(3)} SOL</span>
+                    <a className='link' href={`https://solscan.io/tx/${ev.signature}`} target='_blank' rel='noopener noreferrer'>
+                      {short(ev.mint)}
+                      <ExternalLink className='w-3 h-3' />
+                    </a>
+                    <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : ev.venue === 'routed' ? 'Routed' : 'PumpSwap'}</span>
+                    <span className='ml-auto text-slate-400 text-xs'>
+                      {ev.label} - {fmtTime(ev.time)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {tab === 'open' && (
+            <div className='panel-scroll'>
+              <table className='data-table'>
+                <thead>
+                  <tr>
+                    <th />
+                    <th>Wallet</th>
+                    <th>Token</th>
+                    <th>Scenarios</th>
+                    <th>Vs target</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {openGroups.map((g) => {
+                    const first = g.rows[0];
+                    const multi = g.rows.length > 1;
+                    const key = `open:${g.id}`;
+                    const isOpen = expanded.has(key);
+                    const total = first.scenarioTotal ?? g.rows.length;
+                    const label = multi ? `${g.rows.length}/${total} scenarios` : total > 1 ? `${first.delayMs} ms - 1/${total}` : `${first.delayMs} ms`;
+                    return (
+                      <React.Fragment key={key}>
+                        <tr>
+                          <td style={{ width: 36 }}>{multi && <Toggle open={isOpen} label={isOpen ? 'Hide the scenarios' : 'Show the scenarios'} onClick={() => toggleOp(key)} />}</td>
+                          <td>{first.label}</td>
+                          <td>{tokenLink(first.mint)}</td>
+                          <td>{label}</td>
+                          <td className={multi ? '' : tone(-first.slipVsTargetPct)}>
+                            {multi ? fmtRange(g.rows.map((r) => r.slipVsTargetPct), fmtPct) : fmtPct(first.slipVsTargetPct)}
+                          </td>
+                          <td>{fmtTime(Math.min(...g.rows.map((r) => r.openedAt)))}</td>
+                        </tr>
+                        {multi &&
+                          isOpen &&
+                          g.rows.map((r) => (
+                            <tr key={r.key} style={{ background: 'rgba(255,255,255,0.03)' }}>
+                              <td />
+                              <td colSpan={2} className='text-slate-400 text-xs'>
+                                Scenario
+                              </td>
+                              <td>{r.delayMs} ms</td>
+                              <td className={tone(-r.slipVsTargetPct)}>{fmtPct(r.slipVsTargetPct)}</td>
+                              <td>{fmtTime(r.openedAt)}</td>
+                            </tr>
+                          ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {openGroups.length === 0 && <div className='empty'>No open positions.</div>}
+            </div>
+          )}
+
+          {tab === 'closed' && (
+            <div className='panel-scroll'>
+              <table className='data-table'>
+                <thead>
+                  <tr>
+                    <th />
+                    <th>Time</th>
+                    <th>Wallet</th>
+                    <th>Token</th>
+                    <th>Scenarios</th>
+                    <th>Vs target</th>
+                    <th>Held</th>
+                    <th>Exit</th>
+                    <th>PnL (SOL)</th>
+                    <th>PnL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {closedGroups.slice(0, 200).map((g) => {
+                    const first = g.rows[0];
+                    const multi = g.rows.length > 1;
+                    const key = `closed:${g.id}`;
+                    const isOpen = expanded.has(key);
+                    if (!multi) {
+                      return (
+                        <tr key={key}>
+                          <td />
+                          <td>{fmtTime(first.time)}</td>
+                          <td>{first.label}</td>
+                          <td>{tokenLink(first.mint)}</td>
+                          <td>{first.delayMs} ms</td>
+                          <td>{fmtPct(first.slipVsTargetPct)}</td>
+                          <td>{fmtHeld(first.heldSec)}</td>
+                          <td>{translateText(first.reason)}</td>
+                          <td className={tone(first.pnlSol)}>{fmtSol(first.pnlSol)}</td>
+                          <td>{pnlChip(first.pnlPct)}</td>
+                        </tr>
+                      );
+                    }
+                    const pcts = g.rows.map((r) => r.pnlPct).filter((x): x is number => x != null);
+                    const reasons = [...new Set(g.rows.map((r) => translateText(r.reason)))];
+                    return (
+                      <React.Fragment key={key}>
+                        <tr>
+                          <td style={{ width: 36 }}>
+                            <Toggle open={isOpen} label={isOpen ? 'Hide the scenarios' : 'Show the scenarios'} onClick={() => toggleOp(key)} />
+                          </td>
+                          <td>{fmtTime(Math.max(...g.rows.map((r) => r.time)))}</td>
+                          <td>{first.label}</td>
+                          <td>{tokenLink(first.mint)}</td>
+                          <td>{g.rows.length} scenarios</td>
+                          <td>{fmtRange(g.rows.map((r) => r.slipVsTargetPct), fmtPct)}</td>
+                          <td>{fmtRange(g.rows.map((r) => r.heldSec), fmtHeld)}</td>
+                          <td>{reasons.length === 1 ? reasons[0] : 'Mixed'}</td>
+                          <td />
+                          <td>{pcts.length ? <span className='chip neutral'>{fmtRange(pcts, fmtPct)}</span> : pnlChip(null)}</td>
+                        </tr>
+                        {isOpen &&
+                          g.rows.map((r, i) => (
+                            <tr key={`${key}:${r.delayMs}:${i}`} style={{ background: 'rgba(255,255,255,0.03)' }}>
+                              <td />
+                              <td colSpan={3} className='text-slate-400 text-xs'>
+                                Scenario closed {fmtTime(r.time)}
+                              </td>
+                              <td>{r.delayMs} ms</td>
+                              <td>{fmtPct(r.slipVsTargetPct)}</td>
+                              <td>{fmtHeld(r.heldSec)}</td>
+                              <td>{translateText(r.reason)}</td>
+                              <td className={tone(r.pnlSol)}>{fmtSol(r.pnlSol)}</td>
+                              <td>{pnlChip(r.pnlPct)}</td>
+                            </tr>
+                          ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {closedGroups.length === 0 && <div className='empty'>No closed trades yet.</div>}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 };
