@@ -6,6 +6,8 @@ const WSOL = 'So11111111111111111111111111111111111111112';
 const TOKEN_DECIMALS = 6;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_TRADES = 5000;
+export const MAX_SCENARIOS = 10;
+const SNAPSHOT_TRADES = 300;
 
 export const DEFAULTS = {
   buySol: 0.1,
@@ -41,7 +43,7 @@ export function sanitizeSettings(input = {}, base = DEFAULTS) {
   if (input.delaysMs !== undefined) {
     const raw = Array.isArray(input.delaysMs) ? input.delaysMs : String(input.delaysMs).split(',');
     const arr = raw.map((x) => Math.round(Number(x))).filter((x) => Number.isFinite(x) && x >= 0 && x <= 60000);
-    const uniq = [...new Set(arr)].slice(0, 6).sort((a, b) => a - b);
+    const uniq = [...new Set(arr)].slice(0, MAX_SCENARIOS).sort((a, b) => a - b);
     if (uniq.length) out.delaysMs = uniq;
   }
   return out;
@@ -177,6 +179,8 @@ export class DemoEngine extends EventEmitter {
       })),
       positions: [...this.positions.values()].map((p) => ({
         key: p.key,
+        opId: p.opId ?? null,
+        scenarioTotal: p.scenarioTotal ?? 1,
         wallet: p.wallet,
         label: p.label,
         mint: p.mint,
@@ -187,11 +191,29 @@ export class DemoEngine extends EventEmitter {
         slipVsTargetPct: p.slipVsTargetPct,
         pipelineMs: p.pipelineMs,
       })),
-      trades: this.trades.slice(0, 100),
+      trades: this.trades.slice(0, SNAPSHOT_TRADES),
       events: this.events.slice(0, 40),
       stats: this._stats(),
+      ops: this._opCounts(),
       skipped: this.skipped,
       lastError: this.lastError,
+    };
+  }
+
+  _opCounts() {
+    const closed = new Set();
+    let withoutId = 0;
+    for (const t of this.trades) {
+      if (t.opId) closed.add(t.opId);
+      else withoutId++;
+    }
+    const open = new Set();
+    for (const p of this.positions.values()) if (p.opId) open.add(p.opId);
+    return {
+      openOps: open.size,
+      openScenarios: this.positions.size,
+      closedOps: closed.size + withoutId,
+      closedScenarios: this.trades.length,
     };
   }
 
@@ -397,7 +419,9 @@ export class DemoEngine extends EventEmitter {
     const wm = `${wallet.address}|${trade.mint}`;
     if (trade.side === 'buy') {
       this.sells.delete(wm);
-      await Promise.all(this.settings.delaysMs.map((d) => this._open(wallet, trade, d, detectedAt)));
+      const delays = [...this.settings.delaysMs];
+      const op = { ...trade, opId: `${signature}|${wallet.address}`, scenarioTotal: delays.length };
+      await Promise.all(delays.map((d) => this._open(wallet, op, d, detectedAt)));
     } else {
       this.sells.set(wm, detectedAt);
       if (this.sells.size > 500) this.sells.delete(this.sells.keys().next().value);
@@ -442,6 +466,8 @@ export class DemoEngine extends EventEmitter {
       const price = s.buySol / (tokensRaw / 10 ** TOKEN_DECIMALS);
       const pos = {
         key,
+        opId: trade.opId ?? null,
+        scenarioTotal: trade.scenarioTotal ?? 1,
         wallet: wallet.address,
         label: wallet.label,
         mint: trade.mint,
@@ -480,6 +506,8 @@ export class DemoEngine extends EventEmitter {
       const curve = await this._readCurve(pos.mint);
       const base = {
         time: Date.now(),
+        opId: pos.opId ?? null,
+        scenarioTotal: pos.scenarioTotal ?? 1,
         wallet: pos.wallet,
         label: pos.label,
         mint: pos.mint,
