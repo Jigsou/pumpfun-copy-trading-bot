@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { decodeAccount, marginalMetrics } from '../demo/audit.mjs';
+const idl = { accounts: [{ name: 'BondingCurve', discriminator: [1,2,3,4,5,6,7,8] }], types: [{ name: 'BondingCurve', type: { kind: 'struct', fields: [{name:'reserves',type:'u64'},{name:'complete',type:'bool'},{name:'quote_mint',type:'pubkey'}] } }] };
+const d = Buffer.alloc(49); Buffer.from([1,2,3,4,5,6,7,8]).copy(d); d.writeBigUInt64LE(123n,8);
+const decoded = decodeAccount(idl,'BondingCurve',d);
+assert.equal(decoded.fields.reserves,'123'); assert.equal(decoded.offsets.quote_mint,17);
+assert.equal(decoded.fields.quote_mint,'11111111111111111111111111111111');
+assert.throws(()=>decodeAccount(idl,'BondingCurve',Buffer.alloc(49)),/discriminator/);
+const bad = Buffer.from(d); bad[16]=2; assert.throws(()=>decodeAccount(idl,'BondingCurve',bad),/boolean/);
+assert.throws(()=>decodeAccount(idl,'BondingCurve',d.subarray(0,20)),/Truncated/);
+assert.deepEqual(decodeAccount(idl,'BondingCurve',d.subarray(0,17)).absent,['quote_mint']);
+const m = marginalMetrics({tokenRaw:100000000,quoteRaw:2000000000,decimals:6,supplyRaw:1000000000,walletSol:0.1});
+assert.equal(m.spotPriceSol,0.02); assert.equal(m.marketCapSol,20);
+assert.equal(m.observedBuyReserveRatioPct,5); assert.equal(m.actualTraderPriceImpactPct,null);
+assert.equal(marginalMetrics({tokenRaw:0,quoteRaw:1,decimals:6}),null);
+console.log('Audit decoder and marginal metric tests passed.');
