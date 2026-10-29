@@ -769,6 +769,52 @@ export class RobustDemoEngine extends DemoEngine {
     };
   }
 
+  _bucketsFor(rows, key, label) {
+    const withValue = rows.filter((t) => typeof t[key] === 'number' && Number.isFinite(t[key]));
+    const n = withValue.length;
+    const parts = n >= 40 ? 4 : n >= 12 ? 3 : n >= 6 ? 2 : 0;
+    const out = { key, label, n, missing: rows.length - n, buckets: [] };
+    if (!parts) return out;
+    const sorted = [...withValue].sort((a, b) => a[key] - b[key]);
+    for (let i = 0; i < parts; i++) {
+      const from = Math.floor((i * n) / parts);
+      const to = Math.floor(((i + 1) * n) / parts);
+      const chunk = sorted.slice(from, to);
+      if (!chunk.length) continue;
+      const wins = chunk.filter((t) => t.pnlSol > 0).length;
+      const total = chunk.reduce((a, t) => a + t.pnlSol, 0);
+      const best = Math.max(...chunk.map((t) => t.pnlSol));
+      out.buckets.push({
+        lo: chunk[0][key],
+        hi: chunk[chunk.length - 1][key],
+        n: chunk.length,
+        winRate: wins / chunk.length,
+        medianPnlPct: pct(chunk.map((t) => t.pnlPct), 0.5),
+        avgPnlPct: avg(chunk.map((t) => t.pnlPct)),
+        totalPnlSol: total,
+        pnlWithoutBest: total - best,
+      });
+    }
+    return out;
+  }
+
+  _bucketReport() {
+    const delays = this.settings.delaysMs;
+    const slow = delays.length ? delays[delays.length - 1] : null;
+    const rows = this.trades.filter((t) => t.delayMs === slow && t.pnlSol !== null);
+    const defs = [
+      ['impactPct', 'Trader impact (his buy / pool SOL)'],
+      ['mcapSol', 'Market cap at your entry'],
+      ['ageSec', 'Token age at his buy'],
+      ['walletSol', 'His buy size'],
+    ];
+    return {
+      delayMs: slow,
+      closed: rows.length,
+      metrics: defs.map(([key, label]) => this._bucketsFor(rows, key, label)),
+    };
+  }
+
   _coverage() {
     return {
       startedAt: this.startedAt,
@@ -792,6 +838,7 @@ export class RobustDemoEngine extends DemoEngine {
     s.skipReasons = { ...this.skipReasons };
     s.filtered = { ...this.filtered };
     s.premium = this._premiumBuckets();
+    s.buckets = this._bucketReport();
     s.rawDumps = this.rawDumps.slice(0, 4);
     s.poolDiag = {
       ok: { ...this.poolOk },

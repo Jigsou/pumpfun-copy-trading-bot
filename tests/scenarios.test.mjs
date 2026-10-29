@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { DemoEngine, MAX_SCENARIOS, sanitizeSettings } from '../demo/engine.js';
+import { RobustDemoEngine } from '../demo/robust.js';
 
 // Tests the real engine code (no stub of the pricing engine). Run: node tests/scenarios.test.mjs
 assert.equal(MAX_SCENARIOS, 10);
@@ -94,4 +95,36 @@ assert.equal(await e4._createdAt('M'), null);
 failing = false;
 assert.equal(await e4._createdAt('M'), 500);
 
-console.log('Scenario engine tests passed (real engine.js).');
+const robust = new RobustDemoEngine({ appendLog: () => {} });
+robust.updateSettings({ delaysMs: [300, 2000] });
+robust.trades = [
+  ...Array.from({ length: 12 }, (_, i) => ({
+    delayMs: 2000,
+    pnlSol: i < 4 ? -0.02 : 0.01,
+    pnlPct: i < 4 ? -20 : 10,
+    impactPct: i + 1,
+    mcapSol: i < 6 ? i + 10 : null,
+    ageSec: null,
+    walletSol: 0.5,
+  })),
+  { delayMs: 300, pnlSol: 5, pnlPct: 5000, impactPct: 99, mcapSol: 1, ageSec: 1, walletSol: 9 },
+];
+const report = robust._bucketReport();
+assert.equal(report.delayMs, 2000);
+assert.equal(report.closed, 12);
+const [impact, mcap, age] = report.metrics;
+assert.equal(impact.key, 'impactPct');
+assert.equal(impact.buckets.length, 3);
+assert.deepEqual(impact.buckets.map((b) => b.n), [4, 4, 4]);
+assert.equal(impact.buckets[0].winRate, 0);
+assert.equal(impact.buckets[1].winRate, 1);
+assert.ok(Math.abs(impact.buckets[0].totalPnlSol + 0.08) < 1e-9);
+assert.ok(Math.abs(impact.buckets[1].pnlWithoutBest - 0.03) < 1e-9);
+assert.equal(mcap.n, 6);
+assert.equal(mcap.missing, 6);
+assert.equal(mcap.buckets.length, 2);
+assert.ok(Math.abs(mcap.buckets[1].winRate - 2 / 3) < 1e-9);
+assert.equal(age.n, 0);
+assert.equal(age.buckets.length, 0);
+
+console.log('Scenario engine tests passed (real engine.js and robust.js).');
