@@ -9,6 +9,20 @@ import { PremiumAnalysis } from './PremiumAnalysis';
 
 type TabKey = 'feed' | 'open' | 'closed';
 
+interface WalletStats {
+  slowestDelayMs: number | null;
+  closedOps: number;
+  openOps: number;
+  n: number;
+  unpriced: number;
+  wins: number;
+  winRate: number | null;
+  totalPnlSol: number;
+  pnlWithoutBest: number | null;
+  avgPnlPct: number | null;
+  medianSlipPct: number | null;
+}
+
 const SKIP_LABELS: Record<string, string> = {
   stale: 'Transaction already too old when fetched',
   late: 'Price read too long after the planned delay',
@@ -525,6 +539,8 @@ export const DemoPanel: React.FC = () => {
             <ul>
               {settings.wallets.map((w) => {
                 const ws = walletState(w.address);
+                const wst = (ws as unknown as { stats?: WalletStats } | undefined)?.stats;
+                const copied = wst ? wst.closedOps + wst.openOps : 0;
                 return (
                   <li key={w.address} className='wallet-row'>
                     <div className='avatar'>{w.label.slice(0, 2).toUpperCase()}</div>
@@ -539,6 +555,31 @@ export const DemoPanel: React.FC = () => {
                         <span className='chip bad'>{ws?.sells ?? 0} sells</span>
                         <span className='chip neutral'>{ws?.lastSeen ? fmtTime(ws.lastSeen) : 'no trade yet'}</span>
                       </div>
+                      {wst && copied > 0 && (
+                        <dl className='text-xs grid grid-cols-2 gap-y-1 mt-2'>
+                          <dt className='text-slate-400'>Operations</dt>
+                          <dd className='text-right'>
+                            {wst.closedOps} closed - {wst.openOps} open
+                          </dd>
+                          <dt className='text-slate-400'>Simulated buys</dt>
+                          <dd className='text-right'>
+                            {copied} of {ws?.buys ?? 0}
+                          </dd>
+                          <dt className='text-slate-400'>Win rate{wst.slowestDelayMs != null ? ` (${wst.slowestDelayMs} ms)` : ''}</dt>
+                          <dd className='text-right'>{wst.winRate == null ? '-' : `${Math.round(wst.winRate * 100)} % (${wst.wins}/${wst.n})`}</dd>
+                          <dt className='text-slate-400'>Net PnL</dt>
+                          <dd className={`text-right ${tone(wst.n ? wst.totalPnlSol : null)}`}>{wst.n ? `${fmtSol(wst.totalPnlSol)} SOL` : '-'}</dd>
+                          <dt className='text-slate-400'>Without best trade</dt>
+                          <dd className={`text-right ${tone(wst.pnlWithoutBest)}`}>{wst.pnlWithoutBest == null ? '-' : `${fmtSol(wst.pnlWithoutBest)} SOL`}</dd>
+                          <dt className='text-slate-400'>Avg PnL per trade</dt>
+                          <dd className={`text-right ${tone(wst.avgPnlPct)}`}>{fmtPct(wst.avgPnlPct)}</dd>
+                          <dt className='text-slate-400'>Paid vs wallet (median)</dt>
+                          <dd className='text-right'>{fmtPct(wst.medianSlipPct)}</dd>
+                        </dl>
+                      )}
+                      {wst && copied > 0 && wst.n < 50 && (
+                        <p className='text-xs text-slate-400 mt-1'>Only {wst.n} closed trades at this scenario: too few to conclude anything about this trader.</p>
+                      )}
                     </div>
                   </li>
                 );

@@ -35,4 +35,22 @@ const snap = engine.snapshot();
 assert.deepEqual(snap.ops, { openOps: 1, openScenarios: 1, closedOps: 1, closedScenarios: 1 });
 assert.equal(snap.positions[0].opId, 'sig1|W');
 
+engine.updateSettings({ delaysMs: [300, 2000] });
+engine.wallets.set('W', { address: 'W', label: 'Trader', subId: null, buys: 2, sells: 0, lastSeen: null });
+engine.trades = [
+  { wallet: 'W', opId: 'a', delayMs: 2000, pnlSol: 0.05, pnlPct: 50, slipVsTargetPct: 10 },
+  { wallet: 'W', opId: 'b', delayMs: 2000, pnlSol: -0.02, pnlPct: -20, slipVsTargetPct: 30 },
+  { wallet: 'W', opId: 'b', delayMs: 300, pnlSol: -0.01, pnlPct: -10, slipVsTargetPct: 5 },
+  { wallet: 'X', opId: 'c', delayMs: 2000, pnlSol: 0.01, pnlPct: 10, slipVsTargetPct: 1 },
+];
+const walletStats = engine.snapshot().wallets.find((x) => x.address === 'W').stats;
+assert.equal(walletStats.slowestDelayMs, 2000);
+assert.equal(walletStats.closedOps, 2);
+assert.equal(walletStats.openOps, 1);
+assert.equal(walletStats.n, 2);
+assert.equal(walletStats.wins, 1);
+assert.ok(Math.abs(walletStats.totalPnlSol - 0.03) < 1e-9);
+assert.ok(Math.abs(walletStats.pnlWithoutBest - -0.02) < 1e-9);
+assert.equal(walletStats.medianSlipPct, 20);
+
 console.log('Scenario engine tests passed (real engine.js).');

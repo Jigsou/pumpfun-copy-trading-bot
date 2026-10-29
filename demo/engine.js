@@ -176,6 +176,7 @@ export class DemoEngine extends EventEmitter {
         sells: w.sells,
         lastSeen: w.lastSeen,
         subscribed: w.subId !== null,
+        stats: this._walletStats(w.address),
       })),
       positions: [...this.positions.values()].map((p) => ({
         key: p.key,
@@ -197,6 +198,33 @@ export class DemoEngine extends EventEmitter {
       ops: this._opCounts(),
       skipped: this.skipped,
       lastError: this.lastError,
+    };
+  }
+
+  _walletStats(address) {
+    const delays = this.settings.delaysMs;
+    const slow = delays.length ? delays[delays.length - 1] : null;
+    const mine = this.trades.filter((t) => t.wallet === address);
+    const closedIds = new Set(mine.map((t) => t.opId ?? `${t.time}|${t.mint}|${t.delayMs}`));
+    const openIds = new Set();
+    for (const p of this.positions.values()) if (p.wallet === address) openIds.add(p.opId ?? p.key);
+    const atSlow = mine.filter((t) => t.delayMs === slow);
+    const priced = atSlow.filter((t) => t.pnlSol !== null);
+    const wins = priced.filter((t) => t.pnlSol > 0).length;
+    const total = priced.reduce((a, t) => a + t.pnlSol, 0);
+    const best = priced.length ? Math.max(...priced.map((t) => t.pnlSol)) : null;
+    return {
+      slowestDelayMs: slow,
+      closedOps: closedIds.size,
+      openOps: openIds.size,
+      n: priced.length,
+      unpriced: atSlow.length - priced.length,
+      wins,
+      winRate: priced.length ? wins / priced.length : null,
+      totalPnlSol: total,
+      pnlWithoutBest: best === null ? null : total - best,
+      avgPnlPct: priced.length ? priced.reduce((a, t) => a + t.pnlPct, 0) / priced.length : null,
+      medianSlipPct: median(priced.map((t) => t.slipVsTargetPct)),
     };
   }
 
