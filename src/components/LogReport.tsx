@@ -12,6 +12,8 @@ const sol = (v: unknown) => (typeof v === 'number' ? v.toFixed(4) : '-');
 const pc = (v: unknown) => (typeof v === 'number' ? `${v.toFixed(1)}%` : '-');
 const clock = (v: unknown) => (typeof v === 'number' ? new Date(v).toISOString().slice(11, 23) : '-');
 const hours = (since: unknown) => (typeof since === 'number' ? ((Date.now() - since) / 3600000).toFixed(1) : '-');
+const opTag = (v: unknown) => (typeof v === 'string' ? v.slice(0, 8) : '-');
+const ageMin = (v: unknown) => (typeof v === 'number' ? `${Math.round((Date.now() - v) / 60000)} min` : '-');
 
 function buildReport(s: AnyState | null, ver: Version): string {
   if (!s) return 'No data yet: the local server has not answered. Start the project with npm.cmd start.';
@@ -22,15 +24,17 @@ function buildReport(s: AnyState | null, ver: Version): string {
   L.push(`version: ${ver?.head ?? 'unknown'} (branch ${ver?.branch ?? 'unknown'})`);
   L.push(`running: ${s.running ? 'yes' : 'no'} | helius websocket: ${s.connected ? 'connected' : 'disconnected'}`);
   L.push(
-    `settings: buySol=${st.buySol} delays=${JSON.stringify(st.delaysMs)} curveFee=${st.feePct}% costPerTx=${st.costPerTxSol} maxHoldMin=${st.timeoutMin}`
+    `settings: buySol=${st.buySol} scenarios=${(st.delaysMs ?? []).length} delays=${JSON.stringify(st.delaysMs)} curveFee=${st.feePct}% costPerTx=${st.costPerTxSol} maxHoldMin=${st.timeoutMin}`
   );
   L.push(`rules: maxPremiumPct=${st.maxPremiumPct ?? 0} (0=off) minWalletBuySol=${st.minWalletBuySol ?? 0} (0=off)`);
   if (s.engine) L.push(`engine: ammFee=${s.engine.ammFeePct}% lateTolerance=${s.engine.lateToleranceMs}ms staleAfter=${s.engine.staleAfterS}s`);
+  if (s.ops) L.push(`operations: open=${s.ops.openOps} (${s.ops.openScenarios} scenarios) closed=${s.ops.closedOps} (${s.ops.closedScenarios} scenarios)`);
   L.push('');
   L.push('--- wallets ---');
   for (const w of s.wallets ?? []) L.push(`${w.label} | ${w.address} | buys=${w.buys} sells=${w.sells} last=${clock(w.lastSeen)}`);
   L.push('');
-  L.push('--- results by delay ---');
+  L.push('--- results by scenario (delay) ---');
+  L.push('note: scenarios of one operation copy the same wallet trade, they are alternatives and must not be added together');
   for (const r of s.stats ?? []) {
     L.push(
       `${r.delayMs} ms: closed=${r.n} unpriced=${r.unpriced} win=${r.winRate == null ? '-' : Math.round(r.winRate * 100) + '%'} pnl=${sol(r.totalPnlSol)} SOL avg=${pc(r.avgPnlPct)} paidVsTarget(median)=${pc(r.medianSlipPct)}`
@@ -65,11 +69,11 @@ function buildReport(s: AnyState | null, ver: Version): string {
   L.push('--- skipped / ignored by reason ---');
   L.push(`total skipped counter: ${s.skipped ?? 0}`);
   L.push(
-    `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} txNotFound=${sr.txNotFound ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} curveQuoteNotSol=${sr.curveQuoteNotSol ?? 0} pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapQuoteNotSol=${sr.ammQuoteNotSol ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
+    `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} txNotFound=${sr.txNotFound ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} curveQuoteNotSol=${sr.curveQuoteNotSol ?? 0} pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapQuoteNotSol=${sr.ammQuoteNotSol ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | routedThroughOtherExchange(per buy)=${sr.routed ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
   );
   L.push(`refused by your rules (per delay row): premiumTooHigh=${fl.premiumTooHigh ?? 0} walletBuyTooSmall=${fl.tooSmall ?? 0}`);
   L.push(
-    `coverage (cumulative since reset): walletTrades=${c.walletTrades ?? 0} onCurve=${c.onCurve ?? 0} onPumpSwap=${c.onAmm ?? 0} unpricedExits=${c.unpriced ?? 0} rejectedEntries=${c.rejected ?? 0} poolsKnown=${s.pools ?? 0} nonSolPairsSeen=${s.nonSolPools ?? 0}`
+    `coverage (cumulative since reset): walletTrades=${c.walletTrades ?? 0} onCurve=${c.onCurve ?? 0} onPumpSwap=${c.onAmm ?? 0} routed=${c.routed ?? 0} unpricedExits=${c.unpriced ?? 0} rejectedEntries=${c.rejected ?? 0} poolsKnown=${s.pools ?? 0} nonSolPairsSeen=${s.nonSolPools ?? 0}`
   );
   L.push('');
   L.push('--- last errors ---');
@@ -84,16 +88,18 @@ function buildReport(s: AnyState | null, ver: Version): string {
   }
   if (!(s.events ?? []).length) L.push('none');
   L.push('');
-  L.push('--- last closed simulated trades ---');
+  L.push('--- last closed simulated trades (op = same operation) ---');
   for (const t of (s.trades ?? []).slice(0, 15)) {
     L.push(
-      `${clock(t.time)} ${t.label} delay=${t.delayMs}ms mint=${t.mint} vsTarget=${pc(t.slipVsTargetPct)} held=${t.heldSec}s exit='${t.reason}' pnl=${sol(t.pnlSol)} SOL (${pc(t.pnlPct)})`
+      `${clock(t.time)} ${t.label} op=${opTag(t.opId)} delay=${t.delayMs}ms mint=${t.mint} vsTarget=${pc(t.slipVsTargetPct)} held=${t.heldSec}s exit='${t.reason}' pnl=${sol(t.pnlSol)} SOL (${pc(t.pnlPct)})`
     );
   }
   if (!(s.trades ?? []).length) L.push('none');
   L.push('');
   L.push('--- open simulated positions ---');
-  for (const p of (s.positions ?? []).slice(0, 15)) L.push(`${p.label} delay=${p.delayMs}ms mint=${p.mint} vsTarget=${pc(p.slipVsTargetPct)} openedAt=${clock(p.openedAt)}`);
+  for (const p of (s.positions ?? []).slice(0, 15)) {
+    L.push(`${p.label} op=${opTag(p.opId)} delay=${p.delayMs}ms mint=${p.mint} vsTarget=${pc(p.slipVsTargetPct)} openedAt=${clock(p.openedAt)} age=${ageMin(p.openedAt)}`);
+  }
   if (!(s.positions ?? []).length) L.push('none');
   L.push('');
   L.push('--- diagnostics: last rejected entry ---');

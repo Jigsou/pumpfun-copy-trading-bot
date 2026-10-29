@@ -19,6 +19,7 @@ const SKIP_LABELS: Record<string, string> = {
   ammQuoteNotSol: 'PumpSwap pair is not SOL',
   ammUnreadable: 'PumpSwap pool unreadable',
   notATrade: 'Notifications ignored (not a Pump trade)',
+  routed: 'Trade routed through another exchange (not simulated)',
 };
 
 interface PanelProps {
@@ -132,6 +133,7 @@ export const DemoPanel: React.FC = () => {
   const clockWarning = !!lat && lat.medianChainLagMs != null && lat.medianChainLagMs < 0;
   const shown = applied ?? v.settings;
   const skipRows = Object.entries(state?.skipReasons ?? {}).filter(([, n]) => n > 0);
+  const routedTrades = (cov as unknown as { routed?: number } | undefined)?.routed ?? 0;
 
   const ops = state?.ops;
   const openOps = ops?.openOps ?? new Set(positions.map((p) => p.opId ?? p.key)).size;
@@ -344,8 +346,8 @@ export const DemoPanel: React.FC = () => {
             <header className='panel-head'>
               <div className='inline-flex flex-wrap gap-1 p-1 rounded-lg border border-white/10'>
                 {tabButton('feed', `Wallet trades (${events.length})`)}
-                {tabButton('open', `Open positions (${plural(openOps, 'operation')} - ${plural(openScenarios, 'scenario')})`)}
-                {tabButton('closed', `Closed trades (${plural(closedOps, 'operation')} - ${plural(closedScenarios, 'scenario')})`)}
+                {tabButton('open', `Open positions (${openScenarios})`)}
+                {tabButton('closed', `Closed trades (${closedScenarios})`)}
               </div>
             </header>
             <div className='panel-body'>
@@ -361,7 +363,7 @@ export const DemoPanel: React.FC = () => {
                           {short(ev.mint)}
                           <ExternalLink className='w-3 h-3' />
                         </a>
-                        <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : 'PumpSwap'}</span>
+                        <span className='chip neutral'>{ev.venue === 'pump' ? 'Pump.fun' : ev.venue === 'routed' ? 'Routed' : 'PumpSwap'}</span>
                         <span className='ml-auto text-slate-400 text-xs'>
                           {ev.label} - {fmtTime(ev.time)}
                         </span>
@@ -582,6 +584,7 @@ export const DemoPanel: React.FC = () => {
                 <li>
                   {cov.walletTrades} wallet trades seen: {cov.onCurve} on the Pump.fun curve, {cov.onAmm} on PumpSwap.
                 </li>
+                {routedTrades > 0 && <li>{routedTrades} went through a router or another exchange and are not simulated.</li>}
                 {cov.distinctTokens != null && (
                   <li>
                     {cov.distinctTokens} distinct tokens traded by the wallets, {cov.usableTokens ?? 0} with at least one valid simulated entry.
