@@ -6,6 +6,8 @@ import { openSettings } from '@/lib/uiEvents';
 import { fmtMs, fmtPct, fmtSol, fmtTime, groupByOp, short, tone, translateText } from '@/lib/demoShared';
 import type { PositionRow, TradeRow } from '@/lib/demoShared';
 import { PremiumAnalysis } from './PremiumAnalysis';
+import { BucketAnalysis } from './BucketAnalysis';
+import type { BucketReport } from './BucketAnalysis';
 
 type TabKey = 'feed' | 'open' | 'closed';
 type SortMode = 'newest' | 'oldest' | 'pnl-desc' | 'pnl-asc' | 'held-desc' | 'held-asc' | 'slip-desc' | 'slip-asc';
@@ -72,10 +74,11 @@ interface PanelProps {
   title: string;
   icon?: React.ReactNode;
   right?: React.ReactNode;
+  fill?: boolean;
   children: React.ReactNode;
 }
-const Panel: React.FC<PanelProps> = ({ title, icon, right, children }) => (
-  <section className='panel'>
+const Panel: React.FC<PanelProps> = ({ title, icon, right, fill, children }) => (
+  <section className='panel' style={fill ? { height: '100%' } : undefined}>
     <header className='panel-head'>
       <div className='flex items-center gap-2 text-slate-200'>
         {icon}
@@ -199,6 +202,7 @@ export const DemoPanel: React.FC = () => {
   const shown = applied ?? v.settings;
   const skipRows = Object.entries(state?.skipReasons ?? {}).filter(([, n]) => n > 0);
   const routedTrades = (cov as unknown as { routed?: number } | undefined)?.routed ?? 0;
+  const buckets = (state as unknown as { buckets?: BucketReport } | null)?.buckets;
 
   const ops = state?.ops;
   const openOps = ops?.openOps ?? new Set(positions.map((p) => p.opId ?? p.key)).size;
@@ -386,9 +390,9 @@ export const DemoPanel: React.FC = () => {
 
       <div className={`alert ${verdictClass}`}>{verdict}</div>
 
-      <div className='grid grid-cols-1 lg:grid-cols-12 gap-5 items-start'>
-        <div className='lg:col-span-8 space-y-5'>
-          <Panel title='Results by scenario (execution delay)' icon={<Activity className='w-4 h-4 text-slate-400' />}>
+      <div className='grid grid-cols-1 lg:grid-cols-12 gap-5'>
+        <div className='lg:col-span-8'>
+          <Panel fill title='Results by scenario (execution delay)' icon={<Activity className='w-4 h-4 text-slate-400' />}>
             <div className='panel-scroll'>
               <table className='data-table'>
                 <thead>
@@ -430,12 +434,11 @@ export const DemoPanel: React.FC = () => {
               trade, so they are alternatives, not independent observations, and their results must not be added together.
             </p>
           </Panel>
-
-          <PremiumAnalysis premium={state?.premium} filtered={state?.filtered} settings={applied} />
         </div>
 
-        <div className='lg:col-span-4 space-y-5'>
+        <div className='lg:col-span-4'>
           <Panel
+            fill
             title='Followed wallets'
             icon={<Wallet className='w-4 h-4 text-slate-400' />}
             right={
@@ -514,8 +517,17 @@ export const DemoPanel: React.FC = () => {
             </ul>
             {!hasWallets && <div className='empty'>No wallets. Open Manage to add one.</div>}
           </Panel>
+        </div>
+      </div>
 
+      <div className='grid grid-cols-1 lg:grid-cols-12 gap-5'>
+        <div className='lg:col-span-8'>
+          <PremiumAnalysis premium={state?.premium} filtered={state?.filtered} settings={applied} />
+        </div>
+
+        <div className='lg:col-span-4'>
           <Panel
+            fill
             title={applied ? 'Active settings' : 'Settings used at start'}
             icon={<Settings className='w-4 h-4 text-slate-400' />}
             right={
@@ -547,6 +559,8 @@ export const DemoPanel: React.FC = () => {
           </Panel>
         </div>
       </div>
+
+      <BucketAnalysis report={buckets} />
 
       <section className='panel'>
         <header className='panel-head'>
