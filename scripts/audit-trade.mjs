@@ -30,7 +30,7 @@ async function main() {
   if(!res.ok) throw new Error('Official IDL download failed: HTTP '+res.status);
   const text=await res.text(); const idl=JSON.parse(text);
   if(idl.address!==program) throw new Error('Official IDL program mismatch');
-  const tx=await rpc('getTransaction',[signature,{encoding:'jsonParsed',commitment:'confirmed',maxSupportedTransactionVersion:0}]);
+  const tx=await rpc('getTransaction',[signature,{encoding:'jsonParsed',commitment:'confirmed',maxSupportedTransactionVersion:1}]);
   if(!tx || tx.meta?.err) throw new Error('Transaction missing or failed');
   const outer=tx.transaction.message.instructions ?? [];
   const inner=(tx.meta.innerInstructions ?? []).flatMap((g)=>g.instructions ?? []);
