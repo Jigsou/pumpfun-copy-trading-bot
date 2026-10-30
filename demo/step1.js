@@ -1,5 +1,5 @@
 // Etape 1 : mesure du prix, regles d'entree, mode de sortie et moyenne a la baisse.
-// - echantillonne le PnL simule de chaque position ouverte (MFE / MAE + trajectoire) -> demo/logs/paths.jsonl
+// - lecture du prix des positions ouvertes (PnL simule, MFE / MAE + trajectoire -> demo/logs/paths.jsonl) UNIQUEMENT quand le mode take profit est actif
 // - regles d'entree reglables depuis l'interface (Options > Entry rules, Exit mode, Average down)
 // - mode de sortie : vendre quand la cible vend (actuel) OU take profit reglable (la premiere condition atteinte gagne)
 // - moyenne a la baisse : les achats suivants de la cible sur le meme token ajoutent un achat plus petit a la position ouverte
@@ -438,6 +438,7 @@ export function installStep1(engine, opts = {}) {
   let rr = 0;
   const sampler = setInterval(async () => {
     if (busy || !engine.running || !engine.rpc) return;
+    if (!rules.takeProfitMode) return;
     const queued = engine.rpc.stats?.().queued ?? 0;
     if (queued > o.maxQueued) {
       stats.skippedBusyRpc++;
@@ -452,7 +453,7 @@ export function installStep1(engine, opts = {}) {
         byMint.get(p.mint).push(p);
       }
       for (const m of lastSample.keys()) if (!byMint.has(m)) lastSample.delete(m);
-      const every = rules.takeProfitMode ? 500 : 1000;
+      const every = 500;
       const now = Date.now();
       const due = [...byMint.keys()].filter((m) => now - (lastSample.get(m) ?? 0) >= every);
       const count = Math.min(due.length, o.maxMintsPerTick);
