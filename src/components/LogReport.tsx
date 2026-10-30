@@ -59,7 +59,7 @@ function buildReport(s: AnyState | null, ver: Version): string {
     const refusedRules = Object.entries(s.rules?.refused ?? {});
     L.push(`refused by the extra rules (per delay row): ${refusedRules.length ? refusedRules.map(([k, n]) => `${k}=${n}`).join(' ') : 'none'}`);
     L.push(
-      'legend: sameTokenCooldown = same wallet bought a token already copied (or being copied) less than mintCooldownMin ago | addonVenueChanged = position opened on the curve and the token is now on PumpSwap (no add-on) | addonBelowMinBuy = wallet buy smaller than minWalletBuySol | addonMaxReached = maxAddOns reached | addonNotLower / addonSkippedLower = add-on condition not met'
+      'legend: sameTokenCooldown = same wallet bought a token already copied (or being copied) less than mintCooldownMin ago | addonVenueChanged = position opened on the curve and the token is now on PumpSwap (no add-on) | addonBelowMinBuy = wallet buy smaller than minWalletBuySol | addonMaxReached = maxAddOns reached | addonNotLower / addonSkippedLower = add-on condition not met | an operation missing at one delay was refused there (premiumTooHigh, late, unreadable)'
     );
     const rs = s.rules?.stats ?? {};
     L.push(
@@ -100,16 +100,20 @@ function buildReport(s: AnyState | null, ver: Version): string {
   }
   L.push('');
   const ad = s.premium?.addon;
-  L.push('--- average down (every delay) ---');
+  L.push('--- average down (totals for every delay, list for one delay) ---');
   if (ad) {
-    L.push(`enabled=${ad.enabled ? 'yes' : 'no'} addOnsDone=${ad.addsDone ?? 0}`);
+    const defKey = String(ad.delayMs ?? '');
+    L.push(`enabled=${ad.enabled ? 'yes' : 'no'} addOnsDone=${ad.addsDone ?? 0} | the totals count every operation since the last reset; the list below shows the open operations and the 5 most recent closed ones, for the ${defKey} ms scenario only`);
     for (const d of ad.delays ?? []) {
       const x = ad.byDelay?.[String(d)];
       if (!x) continue;
       L.push(
         `${d} ms: with add-ons closed=${x.withAdds?.n ?? 0} avgAddOns=${num(x.withAdds?.avgAdds)} win=${winPc(x.withAdds?.winRate)} avg=${pc(x.withAdds?.avgPnlPct)} total=${sol(x.withAdds?.totalPnlSol)} SOL | single buy closed=${x.without?.n ?? 0} win=${winPc(x.without?.winRate)} avg=${pc(x.without?.avgPnlPct)} total=${sol(x.without?.totalPnlSol)} SOL`
       );
-      for (const r of x.rows ?? []) {
+      if (String(d) !== defKey) continue;
+      const openRows = (x.rows ?? []).filter((r: AnyState) => r.status === 'open').slice(0, 10);
+      const closedRows = (x.rows ?? []).filter((r: AnyState) => r.status === 'closed').slice(0, 5);
+      for (const r of [...openRows, ...closedRows]) {
         L.push(
           `  ${r.status} ${r.label} mint=${r.mint} addOns=${r.adds} invested=${sol(r.investedSol)} SOL firstPrice=${px(r.firstEntryPrice)} avgPrice=${px(r.avgEntryPrice)} pnl=${r.status === 'closed' ? `${sol(r.pnlSol)} SOL (${pc(r.pnlPct)})` : 'open'}`
         );

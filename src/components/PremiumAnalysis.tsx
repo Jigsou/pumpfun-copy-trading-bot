@@ -52,11 +52,15 @@ interface CommonReport {
   byDelay: Record<string, AddonSide>;
 }
 
+const ROW_CHOICES = [3, 5, 8];
+const MAX_OPEN_ROWS = 10;
+
 const fmtPrice = (v: number | null | undefined) => (v == null ? '-' : v.toPrecision(3));
 const fmtWin = (v: number | null) => (v == null ? '-' : `${(v * 100).toFixed(0)} %`);
 
 export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }) => {
   const [pick, setPick] = useState<string>('auto');
+  const [rowsLimit, setRowsLimit] = useState<string>('5');
   const buckets = premium?.buckets ?? [];
   const total = buckets.reduce((a, b) => a + b.n, 0);
   const cap = settings?.maxPremiumPct ?? 0;
@@ -69,6 +73,11 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
   const view: AddonDelay | null = addon
     ? addon.byDelay?.[selDelay] ?? { delayMs: addon.delayMs ?? 0, withAdds: addon.withAdds, without: addon.without, rows: addon.rows }
     : null;
+  const openRows = view ? view.rows.filter((r) => r.status === 'open').slice(0, MAX_OPEN_ROWS) : [];
+  const closedAll = view ? view.rows.filter((r) => r.status === 'closed') : [];
+  const closedRows = closedAll.slice(0, Number(rowsLimit));
+  const shownRows = [...openRows, ...closedRows];
+  const hiddenRows = closedAll.length - closedRows.length;
 
   const sideRow = (label: string, s: AddonSide, withAdds: boolean) => (
     <tr>
@@ -164,7 +173,7 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
           <div className='space-y-3'>
             <div className='flex flex-wrap items-center justify-between gap-2'>
               <h3 className='text-sm font-semibold text-slate-200'>Average down</h3>
-              <div className='flex items-center gap-2'>
+              <div className='flex flex-wrap items-center gap-2'>
                 <label className='inline-flex items-center gap-2 text-xs text-slate-400'>
                   Delay shown
                   <select className='input' style={{ width: 'auto' }} value={selDelay} onChange={(e) => setPick(e.target.value)}>
@@ -175,14 +184,24 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
                     ))}
                   </select>
                 </label>
+                <label className='inline-flex items-center gap-2 text-xs text-slate-400'>
+                  Closed rows shown
+                  <select className='input' style={{ width: 'auto' }} value={rowsLimit} onChange={(e) => setRowsLimit(e.target.value)}>
+                    {ROW_CHOICES.map((n) => (
+                      <option key={n} value={String(n)}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <button className='btn btn-ghost' onClick={() => openSettings('scale')}>
                   Average down options
                 </button>
               </div>
             </div>
             <p className='text-xs text-slate-400'>
-              {addon.enabled ? 'On' : 'Off'}. Add-on buys made so far: {addon.addsDone}. Showing the {view.delayMs} ms scenario. The default is the slowest delay that has an operation with
-              add-ons. Operations that were averaged down are marked in the Closed trades reason and in the Open positions wallet name.
+              {addon.enabled ? 'On' : 'Off'}. Add-on buys made so far: {addon.addsDone}. Showing the {view.delayMs} ms scenario. The totals below count every operation since the last reset; the list shows
+              the open ones and the most recent closed ones only. Operations that were averaged down are marked in the Closed trades reason and in the Open positions wallet name.
             </p>
             <div className='panel-scroll'>
               <table className='data-table'>
@@ -202,7 +221,7 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
                 </tbody>
               </table>
             </div>
-            {view.rows.length > 0 && (
+            {shownRows.length > 0 && (
               <div className='panel-scroll'>
                 <table className='data-table'>
                   <thead>
@@ -219,7 +238,7 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
                     </tr>
                   </thead>
                   <tbody>
-                    {view.rows.map((r, i) => {
+                    {shownRows.map((r, i) => {
                       const drop = r.firstEntryPrice && r.avgEntryPrice ? (r.avgEntryPrice / r.firstEntryPrice - 1) * 100 : null;
                       return (
                         <tr key={`${r.mint}-${r.status}-${i}`}>
@@ -243,6 +262,7 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
                 </table>
               </div>
             )}
+            {hiddenRows > 0 && <p className='text-xs text-slate-400'>{hiddenRows} older closed operation(s) with add-ons are not listed. They are still counted in the totals above.</p>}
             <p className='text-xs text-slate-400'>
               Average price: SOL invested divided by tokens held, fees included. A lower average than the first price means the add-ons lowered your entry; a higher one means you averaged up. With
               fewer than 10 operations per row, read nothing into it.
