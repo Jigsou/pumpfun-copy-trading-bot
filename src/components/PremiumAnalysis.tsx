@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Filter } from 'lucide-react';
 import type { Premium, ServerSettings } from '@/lib/demoShared';
 import { fmtPct, fmtSol, tone } from '@/lib/demoShared';
@@ -15,7 +15,8 @@ interface AddonSide {
   winRate: number | null;
   avgPnlPct: number | null;
   totalPnlSol: number;
-  avgAdds: number | null;
+  withoutBestSol?: number | null;
+  avgAdds?: number | null;
 }
 interface AddonRow {
   status: 'open' | 'closed';
@@ -28,34 +29,56 @@ interface AddonRow {
   pnlPct: number | null;
   pnlSol: number | null;
 }
+interface AddonDelay {
+  delayMs: number;
+  withAdds: AddonSide;
+  without: AddonSide;
+  rows: AddonRow[];
+}
 interface AddonReport {
   enabled: boolean;
   delayMs: number | null;
   addsDone: number;
+  delays?: number[];
+  byDelay?: Record<string, AddonDelay>;
   withAdds: AddonSide;
   without: AddonSide;
   rows: AddonRow[];
+}
+interface CommonReport {
+  n: number;
+  ops: number;
+  delays: number[];
+  byDelay: Record<string, AddonSide>;
 }
 
 const fmtPrice = (v: number | null | undefined) => (v == null ? '-' : v.toPrecision(3));
 const fmtWin = (v: number | null) => (v == null ? '-' : `${(v * 100).toFixed(0)} %`);
 
 export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }) => {
+  const [pick, setPick] = useState<string>('auto');
   const buckets = premium?.buckets ?? [];
   const total = buckets.reduce((a, b) => a + b.n, 0);
   const cap = settings?.maxPremiumPct ?? 0;
   const min = settings?.minWalletBuySol ?? 0;
-  const addon = (premium as unknown as { addon?: AddonReport } | undefined)?.addon;
+  const extra = premium as unknown as { addon?: AddonReport; common?: CommonReport } | undefined;
+  const addon = extra?.addon;
+  const common = extra?.common;
   const showAddon = !!addon && (addon.enabled || addon.withAdds.n > 0 || addon.rows.length > 0);
+  const selDelay = pick === 'auto' ? String(addon?.delayMs ?? '') : pick;
+  const view: AddonDelay | null = addon
+    ? addon.byDelay?.[selDelay] ?? { delayMs: addon.delayMs ?? 0, withAdds: addon.withAdds, without: addon.without, rows: addon.rows }
+    : null;
 
-  const sideRow = (label: string, s: AddonSide) => (
+  const sideRow = (label: string, s: AddonSide, withAdds: boolean) => (
     <tr>
       <td className='font-semibold'>{label}</td>
       <td>{s.n}</td>
-      <td>{s.n ? (s.avgAdds ?? 0).toFixed(1) : '-'}</td>
+      {withAdds && <td>{s.n ? (s.avgAdds ?? 0).toFixed(1) : '-'}</td>}
       <td>{fmtWin(s.winRate)}</td>
       <td className={tone(s.avgPnlPct)}>{fmtPct(s.avgPnlPct)}</td>
       <td className={tone(s.n ? s.totalPnlSol : null)}>{s.n ? fmtSol(s.totalPnlSol) : '-'}</td>
+      {!withAdds && <td className={tone(s.withoutBestSol ?? null)}>{s.n && s.withoutBestSol != null ? fmtSol(s.withoutBestSol) : '-'}</td>}
     </tr>
   );
 
@@ -107,17 +130,59 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
           Computed on the slowest delay tested ({premium?.delayMs ?? '-'} ms), {total} closed trades. With fewer than 10 trades per row, read nothing into it.
         </p>
 
-        {showAddon && addon && (
+        {common && common.ops > 0 && (
           <div className='space-y-3'>
-            <div className='flex items-center justify-between gap-2'>
+            <h3 className='text-sm font-semibold text-slate-200'>Same operations at every delay</h3>
+            <p className='text-xs text-slate-400'>
+              {common.n} of {common.ops} closed operations were opened at every delay. The premium cap and the late rule remove some operations at the slower delays, so the totals by scenario
+              compare different operations. This table compares the same ones.
+            </p>
+            <div className='panel-scroll'>
+              <table className='data-table'>
+                <thead>
+                  <tr>
+                    <th>Delay</th>
+                    <th>Closed</th>
+                    <th>Win rate</th>
+                    <th>Average PnL</th>
+                    <th>Total PnL (SOL)</th>
+                    <th>Without best (SOL)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {common.delays.map((d) => {
+                    const s = common.byDelay[String(d)];
+                    return s ? sideRow(`${d} ms`, s, false) : null;
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {showAddon && addon && view && (
+          <div className='space-y-3'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
               <h3 className='text-sm font-semibold text-slate-200'>Average down</h3>
-              <button className='btn btn-ghost' onClick={() => openSettings('scale')}>
-                Average down options
-              </button>
+              <div className='flex items-center gap-2'>
+                <label className='inline-flex items-center gap-2 text-xs text-slate-400'>
+                  Delay shown
+                  <select className='input' style={{ width: 'auto' }} value={selDelay} onChange={(e) => setPick(e.target.value)}>
+                    {(addon.delays ?? []).map((d) => (
+                      <option key={d} value={String(d)}>
+                        {d} ms
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button className='btn btn-ghost' onClick={() => openSettings('scale')}>
+                  Average down options
+                </button>
+              </div>
             </div>
             <p className='text-xs text-slate-400'>
-              {addon.enabled ? 'On' : 'Off'}. Add-on buys made so far: {addon.addsDone}. Compared on the slowest delay ({addon.delayMs ?? '-'} ms). Operations that were averaged down are
-              marked in the Closed trades reason and in the Open positions wallet name.
+              {addon.enabled ? 'On' : 'Off'}. Add-on buys made so far: {addon.addsDone}. Showing the {view.delayMs} ms scenario. The default is the slowest delay that has an operation with
+              add-ons. Operations that were averaged down are marked in the Closed trades reason and in the Open positions wallet name.
             </p>
             <div className='panel-scroll'>
               <table className='data-table'>
@@ -132,12 +197,12 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
                   </tr>
                 </thead>
                 <tbody>
-                  {sideRow('With add-ons', addon.withAdds)}
-                  {sideRow('Single buy', addon.without)}
+                  {sideRow('With add-ons', view.withAdds, true)}
+                  {sideRow('Single buy', view.without, true)}
                 </tbody>
               </table>
             </div>
-            {addon.rows.length > 0 && (
+            {view.rows.length > 0 && (
               <div className='panel-scroll'>
                 <table className='data-table'>
                   <thead>
@@ -154,7 +219,7 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
                     </tr>
                   </thead>
                   <tbody>
-                    {addon.rows.map((r, i) => {
+                    {view.rows.map((r, i) => {
                       const drop = r.firstEntryPrice && r.avgEntryPrice ? (r.avgEntryPrice / r.firstEntryPrice - 1) * 100 : null;
                       return (
                         <tr key={`${r.mint}-${r.status}-${i}`}>
@@ -179,8 +244,8 @@ export const PremiumAnalysis: React.FC<Props> = ({ premium, filtered, settings }
               </div>
             )}
             <p className='text-xs text-slate-400'>
-              Average price: SOL invested divided by tokens held, fees included. A lower average than the first price means the add-ons lowered your entry. With fewer than 10 operations per
-              row, read nothing into it.
+              Average price: SOL invested divided by tokens held, fees included. A lower average than the first price means the add-ons lowered your entry; a higher one means you averaged up. With
+              fewer than 10 operations per row, read nothing into it.
             </p>
           </div>
         )}

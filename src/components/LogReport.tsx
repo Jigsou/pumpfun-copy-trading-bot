@@ -32,6 +32,14 @@ function buildReport(s: AnyState | null, ver: Version): string {
   );
   if (s.engine) L.push(`engine: ammFee=${s.engine.ammFeePct}% lateTolerance=${s.engine.lateToleranceMs}ms staleAfter=${s.engine.staleAfterS}s`);
   if (s.ops) L.push(`operations: open=${s.ops.openOps} (${s.ops.openScenarios} scenarios) closed=${s.ops.closedOps} (${s.ops.closedScenarios} scenarios)`);
+  const warnings: string[] = [];
+  if (typeof st.timeoutMin === 'number' && st.timeoutMin > 120) warnings.push(`maxHoldMin=${st.timeoutMin}: a position stays open up to ${st.timeoutMin} min if the wallet never sells`);
+  if (typeof s.latency?.medianClockSkewMs === 'number' && Math.abs(s.latency.medianClockSkewMs) > 500) warnings.push(`PC clock is ${Math.round(s.latency.medianClockSkewMs)} ms away from the chain clock: resync it (w32tm /resync)`);
+  if (warnings.length) {
+    L.push('');
+    L.push('--- warnings ---');
+    for (const w of warnings) L.push(w);
+  }
   L.push('');
   L.push('--- rules (every option, as applied on the server) ---');
   L.push(`entry: maxPremiumPct=${st.maxPremiumPct ?? 0} minWalletBuySol=${st.minWalletBuySol ?? 0} (0=off)`);
@@ -50,6 +58,9 @@ function buildReport(s: AnyState | null, ver: Version): string {
     );
     const refusedRules = Object.entries(s.rules?.refused ?? {});
     L.push(`refused by the extra rules (per delay row): ${refusedRules.length ? refusedRules.map(([k, n]) => `${k}=${n}`).join(' ') : 'none'}`);
+    L.push(
+      'legend: sameTokenCooldown = same wallet bought a token already copied (or being copied) less than mintCooldownMin ago | addonVenueChanged = position opened on the curve and the token is now on PumpSwap (no add-on) | addonBelowMinBuy = wallet buy smaller than minWalletBuySol | addonMaxReached = maxAddOns reached | addonNotLower / addonSkippedLower = add-on condition not met'
+    );
     const rs = s.rules?.stats ?? {};
     L.push(
       `step1 engine: pricesSampled=${rs.samples ?? 0} takeProfitsTriggered=${rs.tpTriggered ?? 0} addOnsDone=${rs.addsDone ?? 0} samplingSkippedRpcBusy=${rs.skippedBusyRpc ?? 0} samplingErrors=${rs.sampleErrors ?? 0} pathsLogged=${rs.pathsLogged ?? 0}`
@@ -58,8 +69,12 @@ function buildReport(s: AnyState | null, ver: Version): string {
     L.push('extended rules: not reported by the server (update and restart the bot)');
   }
   L.push('');
-  L.push('--- wallets ---');
-  for (const w of s.wallets ?? []) L.push(`${w.label} | ${w.address} | buys=${w.buys} sells=${w.sells} last=${clock(w.lastSeen)}`);
+  L.push('--- wallets (copied stats use the delay that has the most operations for that wallet) ---');
+  for (const w of s.wallets ?? []) {
+    const ws = w.stats;
+    const copied = ws ? ` | copiedOps closed=${ws.closedOps} open=${ws.openOps} pricedAt${ws.slowestDelayMs ?? '-'}ms=${ws.n} win=${winPc(ws.winRate)} pnl=${sol(ws.totalPnlSol)} SOL withoutBest=${sol(ws.pnlWithoutBest)} SOL` : '';
+    L.push(`${w.label} | ${w.address} | buys=${w.buys} sells=${w.sells} last=${clock(w.lastSeen)}${copied}`);
+  }
   L.push('');
   L.push('--- results by scenario (delay) ---');
   L.push('note: scenarios of one operation copy the same wallet trade, they are alternatives and must not be added together');
@@ -68,6 +83,16 @@ function buildReport(s: AnyState | null, ver: Version): string {
       `${r.delayMs} ms: closed=${r.n} unpriced=${r.unpriced} win=${r.winRate == null ? '-' : Math.round(r.winRate * 100) + '%'} pnl=${sol(r.totalPnlSol)} SOL avg=${pc(r.avgPnlPct)} paidVsTarget(median)=${pc(r.medianSlipPct)}`
     );
   }
+  const cm = s.premium?.common;
+  if (cm) {
+    L.push('');
+    L.push(`--- same operations at every delay (${cm.n} of ${cm.ops} closed operations were opened at every delay) ---`);
+    L.push('the premium cap and the late rule remove operations at slower delays, so the totals above can compare different operations; these lines compare the same ones');
+    for (const d of cm.delays ?? []) {
+      const x = cm.byDelay?.[String(d)];
+      if (x) L.push(`${d} ms: closed=${x.n} win=${winPc(x.winRate)} avg=${pc(x.avgPnlPct)} total=${sol(x.totalPnlSol)} SOL withoutBest=${sol(x.withoutBestSol)} SOL`);
+    }
+  }
   L.push('');
   L.push(`--- pnl by entry premium (slowest delay ${s.premium?.delayMs ?? '-'} ms) ---`);
   for (const b of s.premium?.buckets ?? []) {
@@ -75,17 +100,20 @@ function buildReport(s: AnyState | null, ver: Version): string {
   }
   L.push('');
   const ad = s.premium?.addon;
-  L.push(`--- average down (slowest delay ${ad?.delayMs ?? '-'} ms) ---`);
+  L.push('--- average down (every delay) ---');
   if (ad) {
     L.push(`enabled=${ad.enabled ? 'yes' : 'no'} addOnsDone=${ad.addsDone ?? 0}`);
-    L.push(
-      `with add-ons: closed=${ad.withAdds?.n ?? 0} avgAddOns=${num(ad.withAdds?.avgAdds)} win=${winPc(ad.withAdds?.winRate)} avg=${pc(ad.withAdds?.avgPnlPct)} total=${sol(ad.withAdds?.totalPnlSol)} SOL`
-    );
-    L.push(`single buy: closed=${ad.without?.n ?? 0} win=${winPc(ad.without?.winRate)} avg=${pc(ad.without?.avgPnlPct)} total=${sol(ad.without?.totalPnlSol)} SOL`);
-    for (const r of ad.rows ?? []) {
+    for (const d of ad.delays ?? []) {
+      const x = ad.byDelay?.[String(d)];
+      if (!x) continue;
       L.push(
-        `${r.status} ${r.label} mint=${r.mint} addOns=${r.adds} invested=${sol(r.investedSol)} SOL firstPrice=${px(r.firstEntryPrice)} avgPrice=${px(r.avgEntryPrice)} pnl=${r.status === 'closed' ? `${sol(r.pnlSol)} SOL (${pc(r.pnlPct)})` : 'open'}`
+        `${d} ms: with add-ons closed=${x.withAdds?.n ?? 0} avgAddOns=${num(x.withAdds?.avgAdds)} win=${winPc(x.withAdds?.winRate)} avg=${pc(x.withAdds?.avgPnlPct)} total=${sol(x.withAdds?.totalPnlSol)} SOL | single buy closed=${x.without?.n ?? 0} win=${winPc(x.without?.winRate)} avg=${pc(x.without?.avgPnlPct)} total=${sol(x.without?.totalPnlSol)} SOL`
       );
+      for (const r of x.rows ?? []) {
+        L.push(
+          `  ${r.status} ${r.label} mint=${r.mint} addOns=${r.adds} invested=${sol(r.investedSol)} SOL firstPrice=${px(r.firstEntryPrice)} avgPrice=${px(r.avgEntryPrice)} pnl=${r.status === 'closed' ? `${sol(r.pnlSol)} SOL (${pc(r.pnlPct)})` : 'open'}`
+        );
+      }
     }
   } else {
     L.push('not reported by the server (update and restart the bot)');
@@ -114,7 +142,7 @@ function buildReport(s: AnyState | null, ver: Version): string {
   L.push('--- skipped / ignored by reason ---');
   L.push(`total skipped counter: ${s.skipped ?? 0}`);
   L.push(
-    `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} txNotFound=${sr.txNotFound ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} curveQuoteNotSol=${sr.curveQuoteNotSol ?? 0} pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapQuoteNotSol=${sr.ammQuoteNotSol ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | routedThroughOtherExchange(per buy)=${sr.routed ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
+    `stale(too old)=${sr.stale ?? 0} late(read after planned delay)=${sr.late ?? 0} txNotFound=${sr.txNotFound ?? 0} curveUnavailable=${sr.curveUnavailable ?? 0} curveQuoteNotSol=${sr.curveQuoteNotSol ?? 0} (curve priced in another coin such as USDC) pumpswapPoolUnknown=${sr.ammPoolUnknown ?? 0} pumpswapQuoteNotSol=${sr.ammQuoteNotSol ?? 0} pumpswapUnreadable=${sr.ammUnreadable ?? 0} | routedThroughOtherExchange(per buy)=${sr.routed ?? 0} | not a pump trade (ignored before fetch)=${sr.notATrade ?? 0}`
   );
   L.push(`refused by your rules (per delay row): premiumTooHigh=${fl.premiumTooHigh ?? 0} walletBuyTooSmall=${fl.tooSmall ?? 0}`);
   L.push(
@@ -137,7 +165,7 @@ function buildReport(s: AnyState | null, ver: Version): string {
   for (const t of (s.trades ?? []).slice(0, 15)) {
     const addInfo = (t.adds ?? 0) > 0 ? ` addOns=${t.adds} invested=${sol(t.investedSol)} SOL firstPrice=${px(t.firstEntryPrice)} avgPrice=${px(t.avgEntryPrice)}` : '';
     L.push(
-      `${clock(t.time)} ${t.label} op=${opTag(t.opId)} delay=${t.delayMs}ms mint=${t.mint} vsTarget=${pc(t.slipVsTargetPct)} held=${t.heldSec}s exit='${t.reason}' pnl=${sol(t.pnlSol)} SOL (${pc(t.pnlPct)}) mfe=${pc(t.mfePct)} mae=${pc(t.maePct)} venue=${t.venue ?? '-'} walletBuy=${sol(t.walletSol)} SOL impact=${pc(t.impactPct)} mcap=${num(t.mcapSol)} SOL age=${typeof t.ageSec === 'number' ? t.ageSec + 's' : '-'}${addInfo}`
+      `${clock(t.time)} ${t.label} op=${opTag(t.opId)} delay=${t.delayMs}ms mint=${t.mint} vsTarget=${pc(t.slipVsTargetPct)} held=${t.heldSec}s exit='${t.reason}' pnl=${sol(t.pnlSol)} SOL (${pc(t.pnlPct)}) bestPnl=${pc(t.mfePct)} worstPnl=${pc(t.maePct)} venue=${t.venue ?? '-'} walletBuy=${sol(t.walletSol)} SOL impact=${pc(t.impactPct)} mcap=${num(t.mcapSol)} SOL age=${typeof t.ageSec === 'number' ? t.ageSec + 's' : '-'}${addInfo}`
     );
   }
   if (!(s.trades ?? []).length) L.push('none');

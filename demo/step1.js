@@ -3,6 +3,7 @@
 // - regles d'entree reglables depuis l'interface (Options > Entry rules, Exit mode, Average down)
 // - mode de sortie : vendre quand la cible vend (actuel) OU take profit reglable (la premiere condition atteinte gagne)
 // - moyenne a la baisse : les achats suivants de la cible sur le meme token ajoutent un achat plus petit a la position ouverte
+// - rapports : stats par wallet au delai qui a le plus d'operations (le plus lent en cas d'egalite), Average down par delai, comparaison sur les operations presentes a tous les delais
 // Les regles voyagent dans settings.rules (demo_start et demo_update_settings) et reviennent dans settings.rules du snapshot.
 // Desactiver tout : variable d'environnement STEP1_OFF=1
 
@@ -70,6 +71,7 @@ export function sanitizeRules(input = {}, base = RULE_DEFAULTS) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const median = (a) => {
+  if (!a.length) return null;
   const s = [...a].sort((x, y) => x - y);
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
@@ -77,11 +79,14 @@ const median = (a) => {
 
 const summarize = (list) => {
   const wins = list.filter((t) => t.pnlSol > 0).length;
+  const total = list.reduce((a, t) => a + t.pnlSol, 0);
+  const best = list.length ? Math.max(...list.map((t) => t.pnlSol)) : null;
   return {
     n: list.length,
     winRate: list.length ? wins / list.length : null,
     avgPnlPct: list.length ? list.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / list.length : null,
-    totalPnlSol: list.reduce((a, t) => a + t.pnlSol, 0),
+    totalPnlSol: total,
+    withoutBestSol: best === null ? null : total - best,
     avgAdds: list.length ? list.reduce((a, t) => a + (t.adds ?? 0), 0) / list.length : null,
   };
 };
@@ -123,46 +128,117 @@ export function installStep1(engine, opts = {}) {
     return origStart(arg);
   };
 
+  const allDelays = () => {
+    const set = new Set(engine.settings.delaysMs);
+    for (const t of engine.trades) set.add(t.delayMs);
+    for (const p of engine.positions.values()) set.add(p.delayMs);
+    return [...set].sort((a, b) => a - b);
+  };
+
   const addonReport = () => {
-    const delays = engine.settings.delaysMs;
-    const slow = delays[delays.length - 1];
-    const closed = engine.trades.filter((t) => t.delayMs === slow && typeof t.pnlSol === 'number');
-    const withAdds = closed.filter((t) => (t.adds ?? 0) > 0);
-    const rows = [];
-    for (const p of engine.positions.values()) {
-      if (p.delayMs !== slow || !(p.adds > 0)) continue;
-      rows.push({
-        status: 'open',
-        label: p.label,
-        mint: p.mint,
-        adds: p.adds,
-        investedSol: p.investedSol ?? p.buySol,
-        firstEntryPrice: p.firstEntryPrice ?? null,
-        avgEntryPrice: p.entryPrice ?? null,
-        pnlPct: null,
-        pnlSol: null,
-      });
+    const delays = allDelays();
+    const closedAll = engine.trades.filter((t) => typeof t.pnlSol === 'number');
+    const byDelay = {};
+    for (const d of delays) {
+      const closed = closedAll.filter((t) => t.delayMs === d);
+      const withAdds = closed.filter((t) => (t.adds ?? 0) > 0);
+      const rows = [];
+      for (const p of engine.positions.values()) {
+        if (p.delayMs !== d || !(p.adds > 0)) continue;
+        rows.push({
+          status: 'open',
+          label: p.label,
+          mint: p.mint,
+          adds: p.adds,
+          investedSol: p.investedSol ?? p.buySol,
+          firstEntryPrice: p.firstEntryPrice ?? null,
+          avgEntryPrice: p.entryPrice ?? null,
+          pnlPct: null,
+          pnlSol: null,
+        });
+      }
+      for (const t of withAdds.slice(0, 8)) {
+        rows.push({
+          status: 'closed',
+          label: t.label,
+          mint: t.mint,
+          adds: t.adds,
+          investedSol: t.investedSol ?? t.buySol,
+          firstEntryPrice: t.firstEntryPrice ?? null,
+          avgEntryPrice: t.avgEntryPrice ?? null,
+          pnlPct: t.pnlPct,
+          pnlSol: t.pnlSol,
+        });
+      }
+      byDelay[d] = { delayMs: d, withAdds: summarize(withAdds), without: summarize(closed.filter((t) => !((t.adds ?? 0) > 0))), rows };
     }
-    for (const t of withAdds.slice(0, 8)) {
-      rows.push({
-        status: 'closed',
-        label: t.label,
-        mint: t.mint,
-        adds: t.adds,
-        investedSol: t.investedSol ?? t.buySol,
-        firstEntryPrice: t.firstEntryPrice ?? null,
-        avgEntryPrice: t.avgEntryPrice ?? null,
-        pnlPct: t.pnlPct,
-        pnlSol: t.pnlSol,
-      });
+    let def = delays.length ? delays[delays.length - 1] : null;
+    for (let i = delays.length - 1; i >= 0; i--) {
+      const b = byDelay[delays[i]];
+      if (b.withAdds.n > 0 || b.rows.length > 0) {
+        def = delays[i];
+        break;
+      }
     }
+    const d0 = def !== null ? byDelay[def] : null;
     return {
       enabled: rules.scaleInMode,
-      delayMs: slow ?? null,
+      delayMs: def,
       addsDone: stats.addsDone,
-      withAdds: summarize(withAdds),
-      without: summarize(closed.filter((t) => !((t.adds ?? 0) > 0))),
-      rows,
+      delays,
+      byDelay,
+      withAdds: d0 ? d0.withAdds : summarize([]),
+      without: d0 ? d0.without : summarize([]),
+      rows: d0 ? d0.rows : [],
+    };
+  };
+
+  const commonReport = () => {
+    const delays = allDelays();
+    const byOp = new Map();
+    for (const t of engine.trades) {
+      if (typeof t.pnlSol !== 'number' || !t.opId) continue;
+      if (!byOp.has(t.opId)) byOp.set(t.opId, new Map());
+      byOp.get(t.opId).set(t.delayMs, t);
+    }
+    const settingsDelays = engine.settings.delaysMs;
+    const full = [...byOp.values()].filter((m) => settingsDelays.every((d) => m.has(d)));
+    const per = {};
+    for (const d of delays) per[d] = summarize(full.filter((m) => m.has(d)).map((m) => m.get(d)));
+    return { n: full.length, ops: byOp.size, delays, byDelay: per };
+  };
+
+  const walletStatsFor = (address) => {
+    const all = engine.trades.filter((t) => t.wallet === address);
+    const mine = all.filter((t) => typeof t.pnlSol === 'number');
+    const settingsDelays = engine.settings.delaysMs;
+    const delays = [...new Set([...settingsDelays, ...all.map((t) => t.delayMs)])].sort((a, b) => a - b);
+    let d = null;
+    let bestCount = 0;
+    for (const x of delays) {
+      const c = mine.filter((t) => t.delayMs === x).length;
+      if (c > 0 && c >= bestCount) {
+        bestCount = c;
+        d = x;
+      }
+    }
+    const closedIds = new Set(all.map((t) => t.opId ?? `${t.time}|${t.mint}|${t.delayMs}`));
+    const openIds = new Set();
+    for (const p of engine.positions.values()) if (p.wallet === address) openIds.add(p.opId ?? p.key);
+    const atD = d === null ? [] : mine.filter((t) => t.delayMs === d);
+    const sum = summarize(atD);
+    return {
+      slowestDelayMs: d ?? (settingsDelays.length ? settingsDelays[settingsDelays.length - 1] : null),
+      closedOps: closedIds.size,
+      openOps: openIds.size,
+      n: atD.length,
+      unpriced: d === null ? 0 : all.filter((t) => t.delayMs === d && typeof t.pnlSol !== 'number').length,
+      wins: atD.filter((t) => t.pnlSol > 0).length,
+      winRate: sum.winRate,
+      totalPnlSol: sum.totalPnlSol,
+      pnlWithoutBest: sum.withoutBestSol,
+      avgPnlPct: sum.avgPnlPct,
+      medianSlipPct: median(atD.map((t) => t.slipVsTargetPct).filter((v) => typeof v === 'number')),
     };
   };
 
@@ -174,11 +250,13 @@ export function installStep1(engine, opts = {}) {
       if (!real || !(real.adds > 0)) return p;
       return { ...p, label: `${p.label} (+${real.adds} add-on${real.adds > 1 ? 's' : ''})`, adds: real.adds, investedSol: real.investedSol };
     });
+    const wallets = (snap.wallets ?? []).map((w) => ({ ...w, stats: walletStatsFor(w.address) }));
     return {
       ...snap,
       positions,
+      wallets,
       settings: snap.settings ? { ...snap.settings, rules } : snap.settings,
-      premium: snap.premium ? { ...snap.premium, addon: addonReport() } : snap.premium,
+      premium: snap.premium ? { ...snap.premium, addon: addonReport(), common: commonReport() } : snap.premium,
       rules: { values: rules, refused: { ...refused }, stats: { ...stats } },
     };
   };
