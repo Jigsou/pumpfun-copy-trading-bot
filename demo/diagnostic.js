@@ -1,12 +1,19 @@
 import { RobustDemoEngine } from './robust.js';
 import { decodeBondingCurve } from './layouts.js';
+import { installStep1 } from './step1.js';
 
 const MAX_SHOWN = 6;
 const MAX_TRACKED = 300;
 
 // Same engine as RobustDemoEngine. Nothing is relaxed: every rejection still happens.
 // Added: when a Pump curve buy is refused because the quote is not SOL, keep the evidence.
+// Added (step 1): price path sampling (MFE / MAE) and one copied buy per wallet and token, see step1.js.
 export class DiagnosticDemoEngine extends RobustDemoEngine {
+  constructor(deps, opts = {}) {
+    super(deps, opts);
+    installStep1(this);
+  }
+
   _acceptEntry(pos, trade, detectedAt, delayMs) {
     const ok = super._acceptEntry(pos, trade, detectedAt, delayMs);
     if (!ok && (pos.venue ?? 'pump') === 'pump' && this.lastCurve.get(pos.mint)?.quoteIsSol === false) {
