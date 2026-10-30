@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronRight, Eye, EyeOff, Filter, Key, Plus, SlidersHorizontal, Target, Trash2, Wallet } from 'lucide-react';
+import { ChevronRight, Eye, EyeOff, Filter, Key, Plus, SlidersHorizontal, Target, Trash2, TrendingUp, Wallet } from 'lucide-react';
 import { useDemoSettings } from '@/hooks/useDemo';
 import type { DemoServer } from '@/hooks/useDemo';
 import {
@@ -19,7 +19,7 @@ import {
 import type { DemoForm } from '@/lib/demoStore';
 import { short } from '@/lib/demoShared';
 
-export type SectionKey = 'connection' | 'wallets' | 'trade' | 'rules';
+export type SectionKey = 'connection' | 'wallets' | 'trade' | 'exit' | 'rules';
 
 interface Props {
   server: DemoServer;
@@ -64,6 +64,8 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
   const applied = server.state?.settings;
   const dirty = running && v.ok && !!v.settings && !!applied && !settingsEqual(v.settings, applied);
   const toggle = (k: SectionKey) => onSection(section === k ? null : k);
+  const serverRules = (server.state as unknown as { rules?: { refused?: Record<string, number> } } | null)?.rules;
+  const refused = Object.entries(serverRules?.refused ?? {});
 
   const field = (key: keyof DemoForm, label: string, hint?: string) => (
     <div className='field'>
@@ -76,6 +78,13 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
       />
       {v.errors[key] ? <span className='field-error'>{v.errors[key]}</span> : hint ? <span className='hint'>{hint}</span> : null}
     </div>
+  );
+
+  const tick = (key: keyof DemoForm, label: string) => (
+    <label className='flex items-center gap-2 text-sm'>
+      <input type='checkbox' checked={form[key] === '1'} onChange={(e) => setForm({ [key]: e.target.checked ? '1' : '0' } as Partial<DemoForm>)} />
+      {label}
+    </label>
   );
 
   const delayRows = delaysToList(form.delays);
@@ -125,6 +134,12 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
 
   const delaysText = v.settings ? v.settings.delaysMs.join(' / ') : form.delays;
   const walletNames = wallets.slice(0, 2).map((w) => w.label).join(', ');
+  const extraRules =
+    [form.maxImpactPct, form.minMcapSol, form.maxMcapSol, form.minAgeSec, form.maxAgeSec, form.minBuyVsUsual, form.maxOpenOps, form.minWalletsOnToken, form.dailyLossLimitSol, form.mintCooldownMin].filter(
+      (x) => Number(x) > 0
+    ).length +
+    (form.allowCurve === '0' ? 1 : 0) +
+    (form.allowPumpswap === '0' ? 1 : 0);
 
   let footText = 'Saved in this browser. Used when you press Start simulation.';
   let footClass = 'text-slate-400';
@@ -278,17 +293,54 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
         </MenuItem>
 
         <MenuItem
+          icon={<TrendingUp className='w-4 h-4' />}
+          title='Exit mode'
+          summary={form.takeProfitMode === '1' ? `Take profit at +${form.takeProfitPct} %, or when the wallet sells first` : 'Sell when the wallet sells'}
+          open={section === 'exit'}
+          onToggle={() => toggle('exit')}
+        >
+          <div className='space-y-3'>
+            {tick('takeProfitMode', 'Take profit mode')}
+            <div className='grid grid-cols-2 gap-3'>
+              {field('takeProfitPct', 'Take profit (% net PnL)', 'Net of fees. Checked every 0.5 s, then the scenario delay is added before the sale.')}
+            </div>
+            <span className='hint block'>
+              Unchecked: current mode, you sell when the wallet sells. Checked: you sell as soon as your simulated PnL reaches the take profit, and if the wallet sells before that you sell with it. There is no stop-loss:
+              Max hold still applies. Applies to new and open positions.
+            </span>
+          </div>
+        </MenuItem>
+
+        <MenuItem
           icon={<Filter className='w-4 h-4' />}
           title='Entry rules'
-          summary={`Max premium ${form.maxPremium === '0' ? 'off' : `${form.maxPremium} %`}, min wallet buy ${form.minBuy === '0' ? 'off' : `${form.minBuy} SOL`}`}
+          summary={`Max premium ${form.maxPremium === '0' ? 'off' : `${form.maxPremium} %`}, min wallet buy ${form.minBuy === '0' ? 'off' : `${form.minBuy} SOL`}${extraRules ? `, ${extraRules} more rule(s) on` : ''}`}
           open={section === 'rules'}
           onToggle={() => toggle('rules')}
         >
           <div className='grid grid-cols-2 gap-3'>
             {field('maxPremium', 'Max entry premium (%)', '0 = off. Skip entries that cost more than this over the wallet fill.')}
             {field('minBuy', 'Min wallet buy (SOL)', '0 = off. Ignore smaller buys from the wallet.')}
+            {field('maxImpactPct', 'Max his buy vs pool (%)', '0 = off. Skip if his buy is more than this share of the pool SOL.')}
+            {field('minBuyVsUsual', 'Min buy vs his usual (x)', '0 = off. His buy must be at least X times the median of his last 30 buys (needs 5 buys).')}
+            {field('minMcapSol', 'Min market cap (SOL)', '0 = off. Market cap at your entry.')}
+            {field('maxMcapSol', 'Max market cap (SOL)', '0 = off. Market cap at your entry.')}
+            {field('minAgeSec', 'Min token age (s)', '0 = off. A token with an unknown age passes.')}
+            {field('maxAgeSec', 'Max token age (s)', '0 = off. A token with an unknown age passes.')}
+            {field('mintCooldownMin', 'One buy per token (min)', '0 = off. After a copied buy, ignore the other buys of the same token by this wallet for X minutes.')}
+            {field('maxOpenOps', 'Max open operations', '0 = off. Skip new entries while this many operations are open.')}
+            {field('minWalletsOnToken', 'Min wallets on same token', '0 or 1 = off. Needs N followed wallets buying the same token inside the window below.')}
+            {field('confluenceWindowSec', 'Confluence window (s)', 'Used only with the rule on the left.')}
+            {field('dailyLossLimitSol', 'Daily loss limit (SOL)', '0 = off. Stop new entries when the last 24 h (slowest scenario) lose more than this.')}
           </div>
-          <span className='hint'>Rules apply to new trades only. Leave both at 0 for the first run to see the unfiltered results.</span>
+          <div className='space-y-2 mt-3'>
+            {tick('allowCurve', 'Follow buys on the bonding curve')}
+            {tick('allowPumpswap', 'Follow buys on PumpSwap')}
+          </div>
+          <span className='hint block mt-2'>
+            Rules apply to new trades only. Leave everything at 0 for the first run to see the unfiltered results. A rule that needs a value the bot does not have yet lets the trade through.
+          </span>
+          {refused.length > 0 && <span className='hint block mt-2'>Refused so far (per delay row): {refused.map(([k, n]) => `${k} ${n}`).join(', ')}.</span>}
         </MenuItem>
       </div>
 

@@ -10,11 +10,43 @@ export interface DemoForm {
   timeoutMin: string;
   maxPremium: string;
   minBuy: string;
+  takeProfitMode: string;
+  takeProfitPct: string;
+  allowCurve: string;
+  allowPumpswap: string;
+  maxImpactPct: string;
+  minMcapSol: string;
+  maxMcapSol: string;
+  minAgeSec: string;
+  maxAgeSec: string;
+  minBuyVsUsual: string;
+  maxOpenOps: string;
+  mintCooldownMin: string;
+  minWalletsOnToken: string;
+  confluenceWindowSec: string;
+  dailyLossLimitSol: string;
 }
 export interface DemoSettingsState {
   apiKey: string;
   wallets: WalletEntry[];
   form: DemoForm;
+}
+export interface RuleSettings {
+  takeProfitMode: boolean;
+  takeProfitPct: number;
+  allowCurve: boolean;
+  allowPumpswap: boolean;
+  maxImpactPct: number;
+  minMcapSol: number;
+  maxMcapSol: number;
+  minAgeSec: number;
+  maxAgeSec: number;
+  minBuyVsUsual: number;
+  maxOpenOps: number;
+  mintCooldownMin: number;
+  minWalletsOnToken: number;
+  confluenceWindowSec: number;
+  dailyLossLimitSol: number;
 }
 export interface ParsedSettings {
   buySol: number;
@@ -24,6 +56,7 @@ export interface ParsedSettings {
   timeoutMin: number;
   maxPremiumPct: number;
   minWalletBuySol: number;
+  rules: RuleSettings;
 }
 export interface Validation {
   ok: boolean;
@@ -44,7 +77,60 @@ export const DEFAULT_FORM: DemoForm = {
   timeoutMin: '30',
   maxPremium: '0',
   minBuy: '0',
+  takeProfitMode: '0',
+  takeProfitPct: '30',
+  allowCurve: '1',
+  allowPumpswap: '1',
+  maxImpactPct: '0',
+  minMcapSol: '0',
+  maxMcapSol: '0',
+  minAgeSec: '0',
+  maxAgeSec: '0',
+  minBuyVsUsual: '0',
+  maxOpenOps: '0',
+  mintCooldownMin: '30',
+  minWalletsOnToken: '0',
+  confluenceWindowSec: '60',
+  dailyLossLimitSol: '0',
 };
+
+const SAVED_KEYS = [
+  'buySol',
+  'delays',
+  'feePct',
+  'costPerTxSol',
+  'timeoutMin',
+  'takeProfitMode',
+  'takeProfitPct',
+  'allowCurve',
+  'allowPumpswap',
+  'maxImpactPct',
+  'minMcapSol',
+  'maxMcapSol',
+  'minAgeSec',
+  'maxAgeSec',
+  'minBuyVsUsual',
+  'maxOpenOps',
+  'mintCooldownMin',
+  'minWalletsOnToken',
+  'confluenceWindowSec',
+  'dailyLossLimitSol',
+] as const;
+
+const RULE_NUMBER_FIELDS: { key: keyof DemoForm; min: number; max: number; label: string }[] = [
+  { key: 'takeProfitPct', min: 1, max: 10000, label: 'Take profit' },
+  { key: 'maxImpactPct', min: 0, max: 1000, label: 'Max impact' },
+  { key: 'minMcapSol', min: 0, max: 1e7, label: 'Min market cap' },
+  { key: 'maxMcapSol', min: 0, max: 1e7, label: 'Max market cap' },
+  { key: 'minAgeSec', min: 0, max: 1e8, label: 'Min token age' },
+  { key: 'maxAgeSec', min: 0, max: 1e8, label: 'Max token age' },
+  { key: 'minBuyVsUsual', min: 0, max: 100, label: 'Min buy vs usual' },
+  { key: 'maxOpenOps', min: 0, max: 100, label: 'Max open operations' },
+  { key: 'mintCooldownMin', min: 0, max: 1440, label: 'Cooldown per token' },
+  { key: 'minWalletsOnToken', min: 0, max: 10, label: 'Min wallets on token' },
+  { key: 'confluenceWindowSec', min: 1, max: 3600, label: 'Confluence window' },
+  { key: 'dailyLossLimitSol', min: 0, max: 1000, label: 'Daily loss limit' },
+];
 
 export const delaysToList = (delays: string): string[] => delays.split(',').map((s) => s.trim());
 export const listToDelays = (list: string[]): string => list.join(',');
@@ -71,7 +157,7 @@ export function loadState(): DemoSettingsState {
   const read = (k: string) => (s ? s.getItem(k) : null);
   const savedForm = parseJson<Partial<DemoForm>>(read('demoForm'), {});
   const form: DemoForm = { ...DEFAULT_FORM };
-  for (const key of ['buySol', 'delays', 'feePct', 'costPerTxSol', 'timeoutMin'] as const) {
+  for (const key of SAVED_KEYS) {
     if (typeof savedForm[key] === 'string') form[key] = savedForm[key] as string;
   }
   form.maxPremium = read('demoMaxPremium') ?? DEFAULT_FORM.maxPremium;
@@ -150,6 +236,8 @@ export function validateForm(form: DemoForm): Validation {
   const timeoutMin = check('timeoutMin', 1, 1440, 'Max hold');
   const maxPremiumPct = check('maxPremium', 0, 1000, 'Max premium');
   const minWalletBuySol = check('minBuy', 0, 1000, 'Minimum buy');
+  const ruleNums: Record<string, number> = {};
+  for (const f of RULE_NUMBER_FIELDS) ruleNums[f.key] = check(f.key, f.min, f.max, f.label);
   const parts = delaysToList(form.delays);
   const raw = parts.map((s) => (s === '' ? NaN : Number(s)));
   if (parts.length < 1 || parts.length > MAX_SCENARIOS) {
@@ -161,12 +249,47 @@ export function validateForm(form: DemoForm): Validation {
   }
   if (Object.keys(errors).length) return { ok: false, errors };
   const delaysMs = [...new Set(raw)].sort((a, b) => a - b);
-  return { ok: true, errors, settings: { buySol, delaysMs, feePct, costPerTxSol, timeoutMin, maxPremiumPct, minWalletBuySol } };
+  const rules: RuleSettings = {
+    takeProfitMode: form.takeProfitMode === '1',
+    takeProfitPct: ruleNums.takeProfitPct,
+    allowCurve: form.allowCurve !== '0',
+    allowPumpswap: form.allowPumpswap !== '0',
+    maxImpactPct: ruleNums.maxImpactPct,
+    minMcapSol: ruleNums.minMcapSol,
+    maxMcapSol: ruleNums.maxMcapSol,
+    minAgeSec: ruleNums.minAgeSec,
+    maxAgeSec: ruleNums.maxAgeSec,
+    minBuyVsUsual: ruleNums.minBuyVsUsual,
+    maxOpenOps: ruleNums.maxOpenOps,
+    mintCooldownMin: ruleNums.mintCooldownMin,
+    minWalletsOnToken: ruleNums.minWalletsOnToken,
+    confluenceWindowSec: ruleNums.confluenceWindowSec,
+    dailyLossLimitSol: ruleNums.dailyLossLimitSol,
+  };
+  return { ok: true, errors, settings: { buySol, delaysMs, feePct, costPerTxSol, timeoutMin, maxPremiumPct, minWalletBuySol, rules } };
+}
+
+function rulesEqual(a: RuleSettings, b?: Record<string, number | boolean>): boolean {
+  if (!b) return true;
+  return (Object.keys(a) as (keyof RuleSettings)[]).every((k) => {
+    const x = a[k];
+    const y = b[k];
+    return typeof x === 'boolean' ? x === y : typeof y === 'number' && Math.abs(x - y) < 1e-9;
+  });
 }
 
 export function settingsEqual(
   a: ParsedSettings,
-  b: { buySol: number; delaysMs: number[]; feePct: number; costPerTxSol: number; timeoutMin: number; maxPremiumPct?: number; minWalletBuySol?: number }
+  b: {
+    buySol: number;
+    delaysMs: number[];
+    feePct: number;
+    costPerTxSol: number;
+    timeoutMin: number;
+    maxPremiumPct?: number;
+    minWalletBuySol?: number;
+    rules?: Record<string, number | boolean>;
+  }
 ): boolean {
   const close = (x: number, y: number) => Math.abs(x - y) < 1e-9;
   return (
@@ -177,6 +300,7 @@ export function settingsEqual(
     close(a.maxPremiumPct, b.maxPremiumPct ?? 0) &&
     close(a.minWalletBuySol, b.minWalletBuySol ?? 0) &&
     a.delaysMs.length === b.delaysMs.length &&
-    a.delaysMs.every((d, i) => d === b.delaysMs[i])
+    a.delaysMs.every((d, i) => d === b.delaysMs[i]) &&
+    rulesEqual(a.rules, b.rules)
   );
 }

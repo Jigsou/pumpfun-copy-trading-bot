@@ -1,7 +1,8 @@
 // Etape 1 : mesure du prix, regles d'entree supplementaires et mode de sortie.
 // - echantillonne le PnL simule de chaque position ouverte (MFE / MAE + trajectoire) -> demo/logs/paths.jsonl
-// - regles d'entree reglables depuis l'interface (panneau Entry rules), toutes desactivees par defaut sauf le cooldown par token
+// - regles d'entree reglables depuis l'interface (Options > Entry rules et Exit mode), toutes desactivees par defaut sauf le cooldown par token
 // - mode de sortie : vendre quand la cible vend (actuel) OU take profit reglable (la premiere condition atteinte gagne)
+// Les regles voyagent dans settings.rules (demo_start et demo_update_settings) et reviennent dans settings.rules du snapshot.
 // Desactiver tout : variable d'environnement STEP1_OFF=1
 
 const DEFAULTS = {
@@ -93,8 +94,22 @@ export function installStep1(engine, opts = {}) {
     origUpdate(rest);
   };
 
+  const origStart = engine.start.bind(engine);
+  engine.start = (arg = {}) => {
+    const incoming = arg?.settings?.rules;
+    if (incoming && typeof incoming === 'object') rules = sanitizeRules(incoming, rules);
+    return origStart(arg);
+  };
+
   const origSnapshot = engine.snapshot.bind(engine);
-  engine.snapshot = () => ({ ...origSnapshot(), rules: { values: rules, refused: { ...refused }, stats: { ...stats } } });
+  engine.snapshot = () => {
+    const snap = origSnapshot();
+    return {
+      ...snap,
+      settings: snap.settings ? { ...snap.settings, rules } : snap.settings,
+      rules: { values: rules, refused: { ...refused }, stats: { ...stats } },
+    };
+  };
 
   const origReset = engine.reset.bind(engine);
   engine.reset = () => {
