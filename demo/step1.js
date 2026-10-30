@@ -237,10 +237,6 @@ export function installStep1(engine, opts = {}) {
       }
       if (pnl <= -r.dailyLossLimitSol) why = 'dailyLossLimit';
     }
-    if (!why && (!prev || now - prev.t >= r.mintCooldownMin * 60000)) {
-      firstOp.set(key, { opId: id, t: now });
-      if (firstOp.size > 2000) firstOp.delete(firstOp.keys().next().value);
-    }
     decisions.set(id, why);
     if (decisions.size > 2000) decisions.delete(decisions.keys().next().value);
     return why;
@@ -341,6 +337,12 @@ export function installStep1(engine, opts = {}) {
     if (why) {
       refuse(why);
       return false;
+    }
+    const k = `${pos.wallet}|${pos.mint}`;
+    const prev = firstOp.get(k);
+    if (!prev || prev.opId !== pos.opId) {
+      firstOp.set(k, { opId: pos.opId, t: Date.now() });
+      if (firstOp.size > 2000) firstOp.delete(firstOp.keys().next().value);
     }
     return true;
   };
