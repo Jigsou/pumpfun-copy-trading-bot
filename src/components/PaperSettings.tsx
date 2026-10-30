@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronRight, Eye, EyeOff, Filter, Key, Plus, SlidersHorizontal, Target, Trash2, TrendingUp, Wallet } from 'lucide-react';
+import { ChevronRight, Eye, EyeOff, Filter, Key, Plus, SlidersHorizontal, Target, Trash2, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
 import { useDemoSettings } from '@/hooks/useDemo';
 import type { DemoServer } from '@/hooks/useDemo';
 import {
@@ -19,7 +19,15 @@ import {
 import type { DemoForm } from '@/lib/demoStore';
 import { short } from '@/lib/demoShared';
 
-export type SectionKey = 'connection' | 'wallets' | 'trade' | 'exit' | 'rules';
+export type SectionKey = 'connection' | 'wallets' | 'trade' | 'exit' | 'scale' | 'rules';
+
+const SCALE_PCTS = [10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 100, 125, 150, 200];
+const SCALE_MAX = [1, 2, 3, 4, 5, 8, 10, 15, 20];
+const SCALE_WHEN: [string, string][] = [
+  ['below', 'Only if the wallet new buy is lower than my average entry (average down)'],
+  ['any', 'Always, whatever the price'],
+  ['above', 'Skip if the wallet new buy is lower than my average (add only when higher)'],
+];
 
 interface Props {
   server: DemoServer;
@@ -80,12 +88,21 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
     </div>
   );
 
-  const tick = (key: keyof DemoForm, label: string) => (
-    <label className='flex items-center gap-2 text-sm'>
-      <input type='checkbox' checked={form[key] === '1'} onChange={(e) => setForm({ [key]: e.target.checked ? '1' : '0' } as Partial<DemoForm>)} />
-      {label}
-    </label>
+  const pick = (key: keyof DemoForm, label: string, options: [string, string][], hint?: string) => (
+    <div className='field'>
+      <label htmlFor={`f-${key}`}>{label}</label>
+      <select id={`f-${key}`} className='input' value={form[key]} onChange={(e) => setForm({ [key]: e.target.value } as Partial<DemoForm>)}>
+        {options.map(([value, text]) => (
+          <option key={value} value={value}>
+            {text}
+          </option>
+        ))}
+      </select>
+      {hint ? <span className='hint'>{hint}</span> : null}
+    </div>
   );
+
+  const venueValue = form.allowCurve === '0' ? 'pumpswap' : form.allowPumpswap === '0' ? 'curve' : 'both';
 
   const delayRows = delaysToList(form.delays);
   const rowInvalid = (d: string, i: number) => d === '' || !Number.isInteger(Number(d)) || Number(d) > 60000 || delayRows.indexOf(d) !== i;
@@ -137,9 +154,9 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
   const extraRules =
     [form.maxImpactPct, form.minMcapSol, form.maxMcapSol, form.minAgeSec, form.maxAgeSec, form.minBuyVsUsual, form.maxOpenOps, form.minWalletsOnToken, form.dailyLossLimitSol, form.mintCooldownMin].filter(
       (x) => Number(x) > 0
-    ).length +
-    (form.allowCurve === '0' ? 1 : 0) +
-    (form.allowPumpswap === '0' ? 1 : 0);
+    ).length + (venueValue === 'both' ? 0 : 1);
+  const addOnSol = Number(form.buySol) * (Number(form.scaleInPct) / 100);
+  const scaleWhenShort = form.scaleInWhen === 'any' ? 'at any price' : form.scaleInWhen === 'above' ? 'skipping lower buys' : 'only below my average';
 
   let footText = 'Saved in this browser. Used when you press Start simulation.';
   let footClass = 'text-slate-400';
@@ -300,13 +317,54 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
           onToggle={() => toggle('exit')}
         >
           <div className='space-y-3'>
-            {tick('takeProfitMode', 'Take profit mode')}
+            {pick(
+              'takeProfitMode',
+              'When to sell',
+              [
+                ['0', 'Sell when the wallet sells (current mode)'],
+                ['1', 'Sell at my take profit, or when the wallet sells first'],
+              ],
+              'With the take profit, the first condition reached wins. There is no stop-loss: Max hold still applies. Applies to new and open positions.'
+            )}
             <div className='grid grid-cols-2 gap-3'>
-              {field('takeProfitPct', 'Take profit (% net PnL)', 'Net of fees. Checked every 0.5 s, then the scenario delay is added before the sale.')}
+              {field('takeProfitPct', 'Take profit (% net PnL)', 'Net of fees, measured on your average entry. Checked every 0.5 s, then the scenario delay is added before the sale.')}
             </div>
+          </div>
+        </MenuItem>
+
+        <MenuItem
+          icon={<TrendingDown className='w-4 h-4' />}
+          title='Average down'
+          summary={form.scaleInMode === '1' ? `Add ${form.scaleInPct} % of the amount, up to ${form.scaleInMax} times, ${scaleWhenShort}` : 'Off: one copy per token'}
+          open={section === 'scale'}
+          onToggle={() => toggle('scale')}
+        >
+          <div className='space-y-3'>
+            {pick(
+              'scaleInMode',
+              'When the wallet buys the same token again',
+              [
+                ['0', 'Ignore it (one copy per token, current mode)'],
+                ['1', 'Copy it with a smaller add-on buy (average down)'],
+              ],
+              'The first buy is copied as usual with the Amount per trade. Each next buy of the wallet on the same token, while your position is open, adds to it.'
+            )}
+            {pick(
+              'scaleInPct',
+              'Add-on size (% of Amount per trade)',
+              SCALE_PCTS.map((p): [string, string] => [String(p), `${p} %`]),
+              Number.isFinite(addOnSol) ? `Each add-on buys ${addOnSol.toFixed(4)} SOL with the current Amount per trade.` : undefined
+            )}
+            {pick(
+              'scaleInMax',
+              'Max add-ons per position',
+              SCALE_MAX.map((n): [string, string] => [String(n), String(n)]),
+              'Extra buys beyond this number are ignored.'
+            )}
+            {pick('scaleInWhen', 'Add-on condition', SCALE_WHEN, 'Compared with your average entry price at that moment. The average includes fees and moves down each time you add below it.')}
             <span className='hint block'>
-              Unchecked: current mode, you sell when the wallet sells. Checked: you sell as soon as your simulated PnL reaches the take profit, and if the wallet sells before that you sell with it. There is no stop-loss:
-              Max hold still applies. Applies to new and open positions.
+              Add-ons follow the same delay as the first buy in each scenario, ignore wallet buys smaller than Min wallet buy, and stop when the wallet has sold. The take profit is measured on the
+              average entry, and the extra transaction costs are counted. Results are shown under Results by entry premium.
             </span>
           </div>
         </MenuItem>
@@ -327,15 +385,26 @@ export const PaperSettings: React.FC<Props> = ({ server, section, onSection }) =
             {field('maxMcapSol', 'Max market cap (SOL)', '0 = off. Market cap at your entry.')}
             {field('minAgeSec', 'Min token age (s)', '0 = off. A token with an unknown age passes.')}
             {field('maxAgeSec', 'Max token age (s)', '0 = off. A token with an unknown age passes.')}
-            {field('mintCooldownMin', 'One buy per token (min)', '0 = off. After a copied buy, ignore the other buys of the same token by this wallet for X minutes.')}
+            {field('mintCooldownMin', 'One buy per token (min)', '0 = off. After a copied buy, ignore the other buys of the same token by this wallet for X minutes. With Average down on, buys on an open position are add-ons instead.')}
             {field('maxOpenOps', 'Max open operations', '0 = off. Skip new entries while this many operations are open.')}
             {field('minWalletsOnToken', 'Min wallets on same token', '0 or 1 = off. Needs N followed wallets buying the same token inside the window below.')}
             {field('confluenceWindowSec', 'Confluence window (s)', 'Used only with the rule on the left.')}
             {field('dailyLossLimitSol', 'Daily loss limit (SOL)', '0 = off. Stop new entries when the last 24 h (slowest scenario) lose more than this.')}
           </div>
-          <div className='space-y-2 mt-3'>
-            {tick('allowCurve', 'Follow buys on the bonding curve')}
-            {tick('allowPumpswap', 'Follow buys on PumpSwap')}
+          <div className='mt-3'>
+            <div className='field'>
+              <label htmlFor='f-venues'>Venues followed</label>
+              <select
+                id='f-venues'
+                className='input'
+                value={venueValue}
+                onChange={(e) => setForm({ allowCurve: e.target.value === 'pumpswap' ? '0' : '1', allowPumpswap: e.target.value === 'curve' ? '0' : '1' })}
+              >
+                <option value='both'>Bonding curve and PumpSwap</option>
+                <option value='curve'>Bonding curve only</option>
+                <option value='pumpswap'>PumpSwap only</option>
+              </select>
+            </div>
           </div>
           <span className='hint block mt-2'>
             Rules apply to new trades only. Leave everything at 0 for the first run to see the unfiltered results. A rule that needs a value the bot does not have yet lets the trade through.

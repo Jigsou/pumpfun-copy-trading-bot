@@ -1,7 +1,8 @@
-// Etape 1 : mesure du prix, regles d'entree supplementaires et mode de sortie.
+// Etape 1 : mesure du prix, regles d'entree, mode de sortie et moyenne a la baisse.
 // - echantillonne le PnL simule de chaque position ouverte (MFE / MAE + trajectoire) -> demo/logs/paths.jsonl
-// - regles d'entree reglables depuis l'interface (Options > Entry rules et Exit mode), toutes desactivees par defaut sauf le cooldown par token
+// - regles d'entree reglables depuis l'interface (Options > Entry rules, Exit mode, Average down)
 // - mode de sortie : vendre quand la cible vend (actuel) OU take profit reglable (la premiere condition atteinte gagne)
+// - moyenne a la baisse : les achats suivants de la cible sur le meme token ajoutent un achat plus petit a la position ouverte
 // Les regles voyagent dans settings.rules (demo_start et demo_update_settings) et reviennent dans settings.rules du snapshot.
 // Desactiver tout : variable d'environnement STEP1_OFF=1
 
@@ -29,6 +30,10 @@ export const RULE_DEFAULTS = {
   minWalletsOnToken: 0,
   confluenceWindowSec: 60,
   dailyLossLimitSol: 0,
+  scaleInMode: false,
+  scaleInPct: 50,
+  scaleInMax: 3,
+  scaleInWhen: 'below',
 };
 
 const RULE_RANGES = {
@@ -44,8 +49,11 @@ const RULE_RANGES = {
   minWalletsOnToken: [0, 10],
   confluenceWindowSec: [1, 3600],
   dailyLossLimitSol: [0, 1000],
+  scaleInPct: [1, 1000],
+  scaleInMax: [1, 20],
 };
-const RULE_BOOLS = ['takeProfitMode', 'allowCurve', 'allowPumpswap'];
+const RULE_BOOLS = ['takeProfitMode', 'allowCurve', 'allowPumpswap', 'scaleInMode'];
+const RULE_ENUMS = { scaleInWhen: ['below', 'any', 'above'] };
 
 export function sanitizeRules(input = {}, base = RULE_DEFAULTS) {
   const out = { ...base };
@@ -55,13 +63,27 @@ export function sanitizeRules(input = {}, base = RULE_DEFAULTS) {
     if (Number.isFinite(n) && n >= min && n <= max) out[k] = n;
   }
   for (const k of RULE_BOOLS) if (typeof input[k] === 'boolean') out[k] = input[k];
+  for (const [k, allowed] of Object.entries(RULE_ENUMS)) if (allowed.includes(input[k])) out[k] = input[k];
   return out;
 }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const median = (a) => {
   const s = [...a].sort((x, y) => x - y);
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+const summarize = (list) => {
+  const wins = list.filter((t) => t.pnlSol > 0).length;
+  return {
+    n: list.length,
+    winRate: list.length ? wins / list.length : null,
+    avgPnlPct: list.length ? list.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / list.length : null,
+    totalPnlSol: list.reduce((a, t) => a + t.pnlSol, 0),
+    avgAdds: list.length ? list.reduce((a, t) => a + (t.adds ?? 0), 0) / list.length : null,
+  };
 };
 
 function curvePnlPct(pos, curve, s) {
@@ -80,7 +102,7 @@ export function installStep1(engine, opts = {}) {
   const o = { ...DEFAULTS, ...opts };
   let rules = sanitizeRules(opts.rules ?? {});
   const refused = {};
-  const stats = { samples: 0, sampleErrors: 0, pathsLogged: 0, skippedBusyRpc: 0, tpTriggered: 0 };
+  const stats = { samples: 0, sampleErrors: 0, pathsLogged: 0, skippedBusyRpc: 0, tpTriggered: 0, addsDone: 0 };
   engine.step1 = stats;
   const refuse = (why) => {
     refused[why] = (refused[why] ?? 0) + 1;
@@ -101,12 +123,62 @@ export function installStep1(engine, opts = {}) {
     return origStart(arg);
   };
 
+  const addonReport = () => {
+    const delays = engine.settings.delaysMs;
+    const slow = delays[delays.length - 1];
+    const closed = engine.trades.filter((t) => t.delayMs === slow && typeof t.pnlSol === 'number');
+    const withAdds = closed.filter((t) => (t.adds ?? 0) > 0);
+    const rows = [];
+    for (const p of engine.positions.values()) {
+      if (p.delayMs !== slow || !(p.adds > 0)) continue;
+      rows.push({
+        status: 'open',
+        label: p.label,
+        mint: p.mint,
+        adds: p.adds,
+        investedSol: p.investedSol ?? p.buySol,
+        firstEntryPrice: p.firstEntryPrice ?? null,
+        avgEntryPrice: p.entryPrice ?? null,
+        pnlPct: null,
+        pnlSol: null,
+      });
+    }
+    for (const t of withAdds.slice(0, 8)) {
+      rows.push({
+        status: 'closed',
+        label: t.label,
+        mint: t.mint,
+        adds: t.adds,
+        investedSol: t.investedSol ?? t.buySol,
+        firstEntryPrice: t.firstEntryPrice ?? null,
+        avgEntryPrice: t.avgEntryPrice ?? null,
+        pnlPct: t.pnlPct,
+        pnlSol: t.pnlSol,
+      });
+    }
+    return {
+      enabled: rules.scaleInMode,
+      delayMs: slow ?? null,
+      addsDone: stats.addsDone,
+      withAdds: summarize(withAdds),
+      without: summarize(closed.filter((t) => !((t.adds ?? 0) > 0))),
+      rows,
+    };
+  };
+
   const origSnapshot = engine.snapshot.bind(engine);
   engine.snapshot = () => {
     const snap = origSnapshot();
+    const positions = (snap.positions ?? []).map((p) => {
+      const real = engine.positions.get(p.key);
+      if (!real || !(real.adds > 0)) return p;
+      return { ...p, label: `${p.label} (+${real.adds} add-on${real.adds > 1 ? 's' : ''})`, adds: real.adds, investedSol: real.investedSol };
+    });
     return {
       ...snap,
+      positions,
       settings: snap.settings ? { ...snap.settings, rules } : snap.settings,
+      premium: snap.premium ? { ...snap.premium, addon: addonReport() } : snap.premium,
       rules: { values: rules, refused: { ...refused }, stats: { ...stats } },
     };
   };
@@ -114,6 +186,7 @@ export function installStep1(engine, opts = {}) {
   const origReset = engine.reset.bind(engine);
   engine.reset = () => {
     for (const k of Object.keys(refused)) delete refused[k];
+    stats.addsDone = 0;
     origReset();
   };
 
@@ -174,7 +247,7 @@ export function installStep1(engine, opts = {}) {
   };
 
   const origOpen = engine._open.bind(engine);
-  engine._open = (wallet, trade, delayMs, detectedAt) => {
+  const normalOpen = (wallet, trade, delayMs, detectedAt) => {
     if (trade.venue === 'pump' || trade.venue === 'pumpswap') {
       const why = decide(wallet, trade);
       if (why) {
@@ -183,6 +256,76 @@ export function installStep1(engine, opts = {}) {
       }
     }
     return origOpen(wallet, trade, delayMs, detectedAt);
+  };
+
+  const handleAddOn = async (wallet, trade, delayMs, detectedAt, key) => {
+    let pos = engine.positions.get(key);
+    const until = Date.now() + 8000;
+    while (!pos && engine.busy.has(key) && Date.now() < until) {
+      await sleep(100);
+      pos = engine.positions.get(key);
+    }
+    if (!pos) return normalOpen(wallet, trade, delayMs, detectedAt);
+    const r = rules;
+    const s = engine.settings;
+    if (s.minWalletBuySol > 0 && trade.sol < s.minWalletBuySol) return refuse('addonBelowMinBuy');
+    if ((pos.adds ?? 0) >= r.scaleInMax) return refuse('addonMaxReached');
+    await engine._waitUntil(detectedAt + delayMs);
+    if (pos.closing || !engine.positions.has(key)) return undefined;
+    const sellAt = engine.sells.get(`${wallet.address}|${trade.mint}`);
+    if (sellAt && sellAt >= detectedAt) return undefined;
+    if (r.scaleInWhen === 'below' && !(trade.price < pos.entryPrice)) return refuse('addonNotLower');
+    if (r.scaleInWhen === 'above' && trade.price < pos.entryPrice) return refuse('addonSkippedLower');
+    const amm = pos.venue === 'amm';
+    if ((trade.venue === 'pumpswap') !== amm) return refuse('addonVenueChanged');
+    const addSol = s.buySol * (r.scaleInPct / 100);
+    let solIn;
+    let tokens;
+    try {
+      if (amm) {
+        const st = await engine._readPool(trade.mint);
+        const base = st ? st.base - pos.tokensRaw : 0;
+        const quote = st ? st.quote + pos.solInLamports : 0;
+        if (!(base > 0) || !(quote > 0)) return refuse('addonUnreadable');
+        solIn = addSol * 1e9 * (1 - engine.ammFeePct / 100);
+        tokens = base - (base * quote) / (quote + solIn);
+      } else {
+        const curve = await engine._readCurve(trade.mint);
+        const vSol = curve ? curve.vSol + pos.solInLamports : 0;
+        const vToken = curve ? curve.vToken - pos.tokensRaw : 0;
+        if (!curve || curve.complete || curve.quoteIsSol === false || !(vSol > 0) || !(vToken > 0)) return refuse('addonUnreadable');
+        solIn = addSol * 1e9 * (1 - s.feePct / 100);
+        tokens = vToken - (vSol * vToken) / (vSol + solIn);
+      }
+    } catch (e) {
+      engine._setError(`Add-on : ${e.message}`);
+      return refuse('addonUnreadable');
+    }
+    if (!(tokens > 0)) return refuse('addonUnreadable');
+    if (pos.closing || !engine.positions.has(key)) return undefined;
+    if ((pos.adds ?? 0) >= r.scaleInMax) return refuse('addonMaxReached');
+    const dec = amm ? (pos.decimals ?? 6) : 6;
+    if (pos.firstEntryPrice === undefined) pos.firstEntryPrice = pos.entryPrice;
+    if (pos.investedSol === undefined) pos.investedSol = pos.buySol;
+    pos.tokensRaw += tokens;
+    pos.solInLamports += solIn;
+    pos.investedSol += addSol;
+    pos.buySol += addSol + s.costPerTxSol;
+    pos.adds = (pos.adds ?? 0) + 1;
+    pos.entryPrice = pos.investedSol / (pos.tokensRaw / 10 ** dec);
+    stats.addsDone++;
+    engine._changed?.();
+    return undefined;
+  };
+
+  engine._open = (wallet, trade, delayMs, detectedAt) => {
+    if (rules.scaleInMode && (trade.venue === 'pump' || trade.venue === 'pumpswap')) {
+      const key = `${wallet.address}|${trade.mint}|${delayMs}`;
+      if (engine.positions.has(key) || engine.busy.has(key)) {
+        return handleAddOn(wallet, trade, delayMs, detectedAt, key).catch((e) => engine._setError(`Add-on : ${e.message}`));
+      }
+    }
+    return normalOpen(wallet, trade, delayMs, detectedAt);
   };
 
   const origAccept = engine._acceptEntry.bind(engine);
@@ -279,6 +422,19 @@ export function installStep1(engine, opts = {}) {
     if (same) {
       rec.mfePct = mfePct;
       rec.maePct = maePct;
+      if (pos.adds > 0) {
+        rec.adds = pos.adds;
+        rec.investedSol = pos.investedSol;
+        rec.firstEntryPrice = pos.firstEntryPrice;
+        rec.avgEntryPrice = pos.entryPrice;
+        rec.buySol = pos.investedSol;
+        rec.reason = `${rec.reason} - averaged down x${pos.adds}`;
+        try {
+          engine.deps.appendLog?.('trades', { ...rec, repriced: true });
+        } catch {
+          stats.sampleErrors++;
+        }
+      }
     }
     try {
       engine.deps.appendLog?.('paths', {
@@ -292,6 +448,8 @@ export function installStep1(engine, opts = {}) {
         reason: same ? rec.reason : reason,
         pnlPct: same ? rec.pnlPct : null,
         heldSec: same ? rec.heldSec : null,
+        adds: pos.adds ?? 0,
+        investedSol: pos.investedSol ?? pos.buySol,
         mfePct,
         maePct,
         samples: path ? path.s : [],

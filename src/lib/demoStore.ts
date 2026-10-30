@@ -25,6 +25,10 @@ export interface DemoForm {
   minWalletsOnToken: string;
   confluenceWindowSec: string;
   dailyLossLimitSol: string;
+  scaleInMode: string;
+  scaleInPct: string;
+  scaleInMax: string;
+  scaleInWhen: string;
 }
 export interface DemoSettingsState {
   apiKey: string;
@@ -47,6 +51,10 @@ export interface RuleSettings {
   minWalletsOnToken: number;
   confluenceWindowSec: number;
   dailyLossLimitSol: number;
+  scaleInMode: boolean;
+  scaleInPct: number;
+  scaleInMax: number;
+  scaleInWhen: 'below' | 'any' | 'above';
 }
 export interface ParsedSettings {
   buySol: number;
@@ -92,6 +100,10 @@ export const DEFAULT_FORM: DemoForm = {
   minWalletsOnToken: '0',
   confluenceWindowSec: '60',
   dailyLossLimitSol: '0',
+  scaleInMode: '0',
+  scaleInPct: '50',
+  scaleInMax: '3',
+  scaleInWhen: 'below',
 };
 
 const SAVED_KEYS = [
@@ -115,6 +127,10 @@ const SAVED_KEYS = [
   'minWalletsOnToken',
   'confluenceWindowSec',
   'dailyLossLimitSol',
+  'scaleInMode',
+  'scaleInPct',
+  'scaleInMax',
+  'scaleInWhen',
 ] as const;
 
 const RULE_NUMBER_FIELDS: { key: keyof DemoForm; min: number; max: number; label: string }[] = [
@@ -130,6 +146,8 @@ const RULE_NUMBER_FIELDS: { key: keyof DemoForm; min: number; max: number; label
   { key: 'minWalletsOnToken', min: 0, max: 10, label: 'Min wallets on token' },
   { key: 'confluenceWindowSec', min: 1, max: 3600, label: 'Confluence window' },
   { key: 'dailyLossLimitSol', min: 0, max: 1000, label: 'Daily loss limit' },
+  { key: 'scaleInPct', min: 1, max: 1000, label: 'Add-on size' },
+  { key: 'scaleInMax', min: 1, max: 20, label: 'Max add-ons' },
 ];
 
 export const delaysToList = (delays: string): string[] => delays.split(',').map((s) => s.trim());
@@ -249,6 +267,7 @@ export function validateForm(form: DemoForm): Validation {
   }
   if (Object.keys(errors).length) return { ok: false, errors };
   const delaysMs = [...new Set(raw)].sort((a, b) => a - b);
+  const scaleInWhen = form.scaleInWhen === 'any' || form.scaleInWhen === 'above' ? form.scaleInWhen : 'below';
   const rules: RuleSettings = {
     takeProfitMode: form.takeProfitMode === '1',
     takeProfitPct: ruleNums.takeProfitPct,
@@ -265,16 +284,21 @@ export function validateForm(form: DemoForm): Validation {
     minWalletsOnToken: ruleNums.minWalletsOnToken,
     confluenceWindowSec: ruleNums.confluenceWindowSec,
     dailyLossLimitSol: ruleNums.dailyLossLimitSol,
+    scaleInMode: form.scaleInMode === '1',
+    scaleInPct: ruleNums.scaleInPct,
+    scaleInMax: ruleNums.scaleInMax,
+    scaleInWhen,
   };
   return { ok: true, errors, settings: { buySol, delaysMs, feePct, costPerTxSol, timeoutMin, maxPremiumPct, minWalletBuySol, rules } };
 }
 
-function rulesEqual(a: RuleSettings, b?: Record<string, number | boolean>): boolean {
+function rulesEqual(a: RuleSettings, b?: Record<string, number | boolean | string>): boolean {
   if (!b) return true;
   return (Object.keys(a) as (keyof RuleSettings)[]).every((k) => {
     const x = a[k];
     const y = b[k];
-    return typeof x === 'boolean' ? x === y : typeof y === 'number' && Math.abs(x - y) < 1e-9;
+    if (typeof x === 'number') return typeof y === 'number' && Math.abs(x - y) < 1e-9;
+    return x === y;
   });
 }
 
@@ -288,7 +312,7 @@ export function settingsEqual(
     timeoutMin: number;
     maxPremiumPct?: number;
     minWalletBuySol?: number;
-    rules?: Record<string, number | boolean>;
+    rules?: Record<string, number | boolean | string>;
   }
 ): boolean {
   const close = (x: number, y: number) => Math.abs(x - y) < 1e-9;
